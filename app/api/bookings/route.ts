@@ -1,4 +1,7 @@
-import { getD1 } from '@/db';
+import { getPool } from '@/db';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 type BookingRow = {
   id: string;
@@ -46,18 +49,22 @@ function toBooking(row: BookingRow) {
 }
 
 async function findRequestedBookings(slots: RequestedSlot[]) {
-  const db = getD1();
-  const predicate = slots.map(() => '(booking_date = ? AND slot_index = ?)').join(' OR ');
-  const values = slots.flatMap((slot) => [slot.date, slot.slotIndex]);
-  const result = await db
-    .prepare(
-      `SELECT id, booking_date, slot_index, member_name, created_at
-       FROM bookings
-       WHERE ${predicate}`,
+  const predicate = slots
+    .map(
+      (_, index) =>
+        `(booking_date = $${index * 2 + 1}::date AND slot_index = $${index * 2 + 2})`,
     )
-    .bind(...values)
-    .all<BookingRow>();
-  return result.results.map(toBooking);
+    .join(' OR ');
+  const values = slots.flatMap((slot) => [slot.date, slot.slotIndex]);
+  const result = await getPool().query<BookingRow>(
+    `SELECT id, booking_date::text AS booking_date, slot_index, member_name,
+            created_at::text AS created_at
+     FROM bookings
+     WHERE ${predicate}
+     ORDER BY booking_date, slot_index`,
+    values,
+  );
+  return result.rows.map(toBooking);
 }
 
 export async function GET(request: Request) {
@@ -70,17 +77,16 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await getD1()
-      .prepare(
-        `SELECT id, booking_date, slot_index, member_name, created_at
-         FROM bookings
-         WHERE booking_date >= ? AND booking_date <= ?
-         ORDER BY booking_date, slot_index`,
-      )
-      .bind(from, to)
-      .all<BookingRow>();
+    const result = await getPool().query<BookingRow>(
+      `SELECT id, booking_date::text AS booking_date, slot_index, member_name,
+              created_at::text AS created_at
+       FROM bookings
+       WHERE booking_date >= $1::date AND booking_date <= $2::date
+       ORDER BY booking_date, slot_index`,
+      [from, to],
+    );
 
-    return json({ bookings: result.results.map(toBooking) });
+    return json({ bookings: result.rows.map(toBooking) });
   } catch (error) {
     console.error('Failed to load bookings', error);
     return json({ error: '预约表暂时无法加载，请稍后重试。' }, 500);
@@ -119,13 +125,19 @@ export async function POST(request: Request) {
     ) {
       return json({ error: '预约时段格式不正确。' }, 400);
     }
-    const key = `${candidate.date}|${candidate.slotIndex}`;
+    const slotIndex = candidate.slotIndex as number;
+    const key = `${candidate.date}|${slotIndex}`;
     if (seen.has(key)) return json({ error: '预约时段不能重复。' }, 400);
     seen.add(key);
-    slots.push({ date: candidate.date, slotIndex: candidate.slotIndex as number });
+    slots.push({ date: candidate.date, slotIndex });
   }
 
-  const placeholders = slots.map(() => '(?, ?, ?, ?)').join(', ');
+  const placeholders = slots
+    .map(
+      (_, index) =>
+        `($${index * 4 + 1}::uuid, $${index * 4 + 2}::date, $${index * 4 + 3}, $${index * 4 + 4})`,
+    )
+    .join(', ');
   const values = slots.flatMap((slot) => [
     crypto.randomUUID(),
     slot.date,
@@ -134,19 +146,21 @@ export async function POST(request: Request) {
   ]);
 
   try {
-    await getD1()
-      .prepare(
-        `INSERT INTO bookings (id, booking_date, slot_index, member_name)
-         VALUES ${placeholders}`,
-      )
-      .bind(...values)
-      .run();
+    const result = await getPool().query<BookingRow>(
+      `INSERT INTO bookings (id, booking_date, slot_index, member_name)
+       VALUES ${placeholders}
+       RETURNING id, booking_date::text AS booking_date, slot_index, member_name,
+                 created_at::text AS created_at`,
+      values,
+    );
 
-    const created = await findRequestedBookings(slots);
-    return json({ bookings: created }, 201);
+    return json({ bookings: result.rows.map(toBooking) }, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('UNIQUE constraint failed')) {
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : '';
+    if (code === '23505') {
       const conflicts = await findRequestedBookings(slots);
       return json(
         {

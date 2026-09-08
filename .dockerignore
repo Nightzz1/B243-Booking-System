@@ -1,0 +1,13 @@
+.git
+.next
+.vinext
+.wrangler
+.pnpm-store
+node_modules
+dist
+coverage
+.env
+.env.*
+!.env.example
+npm-debug.log*
+pnpm-debug.log*

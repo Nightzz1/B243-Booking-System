@@ -11,6 +11,7 @@
 
 # testing
 /coverage
+*.tsbuildinfo
 
 # next.js
 /.next/
@@ -29,6 +30,7 @@ yarn-error.log*
 
 # local environment
 .env*
+!.env.example
 
 # deployment and generated files
 .vercel

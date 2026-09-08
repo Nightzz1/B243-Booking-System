@@ -139,7 +139,7 @@ export default function Home() {
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
+    // oxlint-disable-next-line react/react-compiler -- This effect intentionally starts remote data synchronization.
     void refreshBookings(controller.signal);
     const interval = window.setInterval(() => void refreshBookings(), 15_000);
     const refreshOnFocus = () => void refreshBookings();
@@ -158,12 +158,17 @@ export default function Home() {
     setNoticeIsError(false);
     setSelected((current) => {
       const next = new Set(current);
-      next.has(key) ? next.delete(key) : next.add(key);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
       return next;
     });
   }
 
   function moveWeek(direction: number) {
+    setLoading(true);
     setWeekOffset((current) => current + direction);
     setSelected(new Set());
     setNotice('');
@@ -473,13 +478,12 @@ export default function Home() {
           <label className="grid gap-2 text-sm font-semibold" htmlFor="member-name">
             社员姓名
             <Input
-              autoFocus
               className="h-11 rounded-xl"
               id="member-name"
               maxLength={20}
               onChange={(event) => setMemberName(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') confirmBooking();
+                if (event.key === 'Enter') void confirmBooking();
               }}
               placeholder="请输入你的名字"
               value={memberName}
