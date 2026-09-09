@@ -1,4 +1,8 @@
 import { getPool } from '@/db';
+import {
+  MAX_VISIBLE_WEEK_OFFSET,
+  MIN_VISIBLE_WEEK_OFFSET,
+} from '@/lib/booking-window';
 
 export type ScheduleMode = 'semester' | 'vacation';
 
@@ -111,6 +115,19 @@ export function weekRange(value: string) {
   date.setUTCDate(date.getUTCDate() - (weekday === 0 ? 6 : weekday - 1));
   const from = dateKey(date);
   return { from, to: addDateDays(from, 6) };
+}
+
+export function accessibleScheduleRange() {
+  const currentWeek = weekRange(shanghaiNow().date).from;
+  return {
+    from: addDateDays(currentWeek, MIN_VISIBLE_WEEK_OFFSET * 7),
+    to: addDateDays(currentWeek, MAX_VISIBLE_WEEK_OFFSET * 7 + 6),
+  };
+}
+
+export function isDateAccessible(date: string) {
+  const range = accessibleScheduleRange();
+  return date >= range.from && date <= range.to;
 }
 
 export function shanghaiNow() {

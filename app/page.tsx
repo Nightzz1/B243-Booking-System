@@ -36,6 +36,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { LessonManagement } from '@/components/lesson-management';
+import {
+  MAX_VISIBLE_WEEK_OFFSET,
+  MIN_VISIBLE_WEEK_OFFSET,
+} from '@/lib/booking-window';
 import { cn } from '@/lib/utils';
 
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -59,6 +64,7 @@ const SESSION_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 type UserRole = 'system_admin' | 'club_admin' | 'member';
 type UserStatus = 'pending' | 'approved' | 'rejected';
 type EntryMode = 'booking' | 'activity';
+type ScheduleEntryType = EntryMode | 'lesson';
 type ScheduleMode = 'semester' | 'vacation';
 
 type BookingSettings = {
@@ -101,7 +107,8 @@ type Booking = {
   date: string;
   slotIndex: number;
   memberName: string;
-  entryType: EntryMode;
+  entryType: ScheduleEntryType;
+  lessonId: string | null;
   createdAt: string;
   isOwn: boolean;
   canCancel: boolean;
@@ -477,6 +484,8 @@ export default function Home() {
     const mode = scheduleDays[dateKey(days[0])]?.mode;
     return mode === 'vacation' ? '假期时段表' : '学期时段表';
   }, [days, scheduleDays]);
+  const atEarliestWeek = weekOffset <= MIN_VISIBLE_WEEK_OFFSET;
+  const atLatestWeek = weekOffset >= MAX_VISIBLE_WEEK_OFFSET;
 
   function slotDescription(entry: Booking) {
     const slot = scheduleDays[entry.date]?.slots.find(
@@ -611,6 +620,7 @@ export default function Home() {
     const key = bookingKey(dayIndex, slotIndex);
     const booking = bookings[key];
     if (booking) {
+      if (booking.entryType === 'lesson') return;
       if (booking.entryType === 'activity') {
         if (entryMode === 'activity' && booking.canCancel) {
           setCancelEntry(booking);
@@ -673,13 +683,21 @@ export default function Home() {
     });
   }
 
-  function moveWeek(direction: number) {
-    setLoading(true);
-    setWeekOffset((current) => current + direction);
+  function showWeek(offset: number) {
+    if (offset < MIN_VISIBLE_WEEK_OFFSET || offset > MAX_VISIBLE_WEEK_OFFSET) {
+      return;
+    }
     setSelected(new Set());
-    setScheduleDays({});
     setNotice('');
     setNoticeIsError(false);
+    if (offset === weekOffset) return;
+    setLoading(true);
+    setWeekOffset(offset);
+    setScheduleDays({});
+  }
+
+  function moveWeek(direction: number) {
+    showWeek(weekOffset + direction);
   }
 
   function changeEntryMode(mode: EntryMode) {
@@ -1035,6 +1053,7 @@ export default function Home() {
             <Button
               aria-label="上一周"
               className="size-10 rounded-xl"
+              disabled={atEarliestWeek}
               onClick={() => moveWeek(-1)}
               size="icon"
               variant="outline"
@@ -1044,9 +1063,8 @@ export default function Home() {
             <Button
               className="h-10 rounded-xl px-4"
               onClick={() => {
-                setWeekOffset(0);
+                showWeek(0);
                 setActiveDay((clubToday().getUTCDay() + 6) % 7);
-                setSelected(new Set());
               }}
               variant="outline"
             >
@@ -1055,6 +1073,7 @@ export default function Home() {
             <Button
               aria-label="下一周"
               className="size-10 rounded-xl"
+              disabled={atLatestWeek}
               onClick={() => moveWeek(1)}
               size="icon"
               variant="outline"
@@ -1193,16 +1212,16 @@ export default function Home() {
                   ? '假期无此节次'
                   : scheduleSlot.isPublic
                     ? '公用时段'
-                    : scheduleSlot.hasStarted
-                      ? '已开始'
-                      : entryMode === 'booking' && !daySchedule?.bookingOpen
-                        ? '未开放'
-                        : '';
+                    : entryMode === 'booking' && !daySchedule?.bookingOpen
+                      ? '未开放'
+                      : '';
                 const bookingIsInteractive = Boolean(
                   booking &&
                   (booking.entryType === 'booking'
                     ? !booking.isOwn || booking.canCancel
-                    : entryMode === 'activity' && booking.canCancel),
+                    : booking.entryType === 'activity' &&
+                      entryMode === 'activity' &&
+                      booking.canCancel),
                 );
                 const showDirectDelete = Boolean(
                   booking &&
@@ -1215,8 +1234,8 @@ export default function Home() {
                   <button
                     aria-label={
                       booking
-                        ? `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${booking.entryType === 'activity' ? '活动' : '预约'}：${booking.memberName}${booking.entryType === 'booking' && !booking.isOwn ? '，点击查看联系方式' : showDirectDelete ? '，点击可取消' : ''}`
-                        : `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${unavailableLabel || (isSelected ? '已选择' : '可选择')}`
+                        ? `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${booking.entryType === 'activity' ? '活动' : booking.entryType === 'lesson' ? '鼓课' : '预约'}：${booking.memberName}${booking.entryType === 'booking' && !booking.isOwn ? '，点击查看联系方式' : showDirectDelete ? '，点击可取消' : scheduleSlot?.hasStarted ? '，已结束且不可修改' : ''}`
+                        : `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${unavailableLabel || (isSelected ? '已选择' : scheduleSlot?.hasStarted ? '无人预约，已结束且不可修改' : '可选择')}`
                     }
                     aria-pressed={isSelected}
                     className={cn(
@@ -1225,15 +1244,18 @@ export default function Home() {
                       !booking &&
                         selectable &&
                         'hover:bg-primary/8 active:bg-primary/15',
+                      !booking && !selectable && 'cursor-not-allowed',
                       !booking &&
                         !selectable &&
-                        'cursor-not-allowed bg-muted/45',
+                        !scheduleSlot?.hasStarted &&
+                        'bg-muted/45',
                       !booking &&
                         scheduleSlot?.isPublic &&
                         'bg-sky-50/80 text-sky-900',
                       booking?.entryType === 'booking' &&
                         'bg-foreground/[0.035]',
                       booking?.entryType === 'activity' && 'bg-amber-100/65',
+                      booking?.entryType === 'lesson' && 'bg-violet-100/75',
                       booking?.entryType === 'booking' &&
                         !booking.isOwn &&
                         'cursor-pointer hover:bg-primary/8',
@@ -1256,9 +1278,11 @@ export default function Home() {
                           'mx-auto flex w-fit max-w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-bold',
                           booking.entryType === 'activity'
                             ? 'bg-amber-500/18 text-amber-950'
-                            : booking.isOwn
-                              ? 'bg-primary/30 text-foreground'
-                              : 'bg-foreground/8 text-foreground/75',
+                            : booking.entryType === 'lesson'
+                              ? 'bg-violet-500/18 text-violet-950'
+                              : booking.isOwn
+                                ? 'bg-primary/30 text-foreground'
+                                : 'bg-foreground/8 text-foreground/75',
                         )}
                       >
                         {booking.entryType === 'activity' ? (
@@ -1266,10 +1290,16 @@ export default function Home() {
                             aria-hidden="true"
                             className="size-3.5"
                           />
+                        ) : booking.entryType === 'lesson' ? (
+                          <Drum aria-hidden="true" className="size-3.5" />
                         ) : (
                           <Users aria-hidden="true" className="size-3.5" />
                         )}
-                        <span className="truncate">{booking.memberName}</span>
+                        <span className="truncate">
+                          {booking.entryType === 'lesson'
+                            ? `鼓课：${booking.memberName}`
+                            : booking.memberName}
+                        </span>
                         {showDirectDelete && (
                           <Trash2
                             aria-hidden="true"
@@ -1286,7 +1316,11 @@ export default function Home() {
                         {unavailableLabel}
                       </span>
                     ) : (
-                      <span className="sr-only">选择这个时段</span>
+                      <span className="sr-only">
+                        {scheduleSlot?.hasStarted
+                          ? '无人预约，已结束且不可修改'
+                          : '选择这个时段'}
+                      </span>
                     )}
                   </button>
                 );
@@ -1544,6 +1578,12 @@ export default function Home() {
               </Button>
             </div>
           </section>
+
+          <LessonManagement
+            active={adminOpen}
+            onScheduleChange={refreshBookings}
+            settings={bookingSettings}
+          />
 
           <div className="mt-2">
             <h3 className="font-bold">账号审核与身份管理</h3>

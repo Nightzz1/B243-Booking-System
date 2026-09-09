@@ -4,6 +4,7 @@ import { json, mutationOriginError } from '@/lib/http';
 import {
   getBookingPolicy,
   hasSlotStarted,
+  isDateAccessible,
   isRealDate,
   type BookingPolicy,
   slotForDate,
@@ -69,6 +70,9 @@ export async function POST(request: Request) {
       return json({ error: '活动时段格式不正确。' }, 400);
     }
     const slotIndex = value.slotIndex as number;
+    if (!isDateAccessible(value.date)) {
+      return json({ error: '只能管理本周、前三周和后两周范围内的活动。' }, 400);
+    }
     const scheduleSlot = slotForDate(value.date, slotIndex, policy);
     if (!scheduleSlot) {
       return json({ error: '所选节次不在当天的预约表中。' }, 400);
@@ -118,7 +122,10 @@ export async function POST(request: Request) {
         ? String(error.code)
         : '';
     if (code === '23505') {
-      return json({ error: '部分时段已被预约或登记活动，请重新选择。' }, 409);
+      return json(
+        { error: '部分时段已被预约、活动或固定鼓课占用，请重新选择。' },
+        409,
+      );
     }
     console.error('Failed to create activity', error);
     return json({ error: '活动登记失败，请稍后重试。' }, 500);

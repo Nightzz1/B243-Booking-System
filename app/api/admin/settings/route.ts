@@ -1,11 +1,10 @@
 import { canManageActivities, getAuthUser } from '@/lib/auth';
 import { json, mutationOriginError } from '@/lib/http';
+import { getBookingPolicy, isoWeekday, isRealDate } from '@/lib/schedule';
 import {
-  getBookingPolicy,
-  isoWeekday,
-  isRealDate,
-  saveBookingPolicy,
-} from '@/lib/schedule';
+  lessonErrorResponse,
+  saveBookingPolicyWithLessons,
+} from '@/lib/lessons';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,9 +62,15 @@ export async function PATCH(request: Request) {
     const user = await settingsManager(request);
     if (!user) return json({ error: '没有预约设置管理权限。' }, 403);
     return json({
-      settings: await saveBookingPolicy(semesterStart, semesterEnd, user.id),
+      settings: await saveBookingPolicyWithLessons(
+        semesterStart,
+        semesterEnd,
+        user.id,
+      ),
     });
   } catch (error) {
+    const known = lessonErrorResponse(error);
+    if (known) return json(known.body, known.status);
     console.error('Failed to update booking settings', error);
     return json({ error: '预约设置保存失败，请稍后重试。' }, 500);
   }

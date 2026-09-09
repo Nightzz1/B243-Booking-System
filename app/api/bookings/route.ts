@@ -2,10 +2,12 @@ import { getAuthUser, type AuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
 import { json, mutationOriginError } from '@/lib/http';
 import {
+  accessibleScheduleRange,
   addDateDays,
   type BookingPolicy,
   getBookingPolicy,
   hasSlotStarted,
+  isDateAccessible,
   isBookingOpen,
   isRealDate,
   scheduleDay,
@@ -17,7 +19,7 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type EntryType = 'booking' | 'activity';
+type EntryType = 'booking' | 'activity' | 'lesson';
 
 type BookingRow = {
   id: string;
@@ -26,6 +28,7 @@ type BookingRow = {
   member_name: string;
   user_id: string | null;
   entry_type: EntryType;
+  lesson_id: string | null;
   created_at: string;
   phone?: string | null;
   wechat?: string | null;
@@ -37,8 +40,9 @@ type RequestedSlot = {
 };
 
 function canCancelEntry(row: BookingRow, user: AuthUser) {
-  if (user.role === 'system_admin') return true;
   if (hasSlotStarted(row.booking_date, row.slot_index)) return false;
+  if (row.entry_type === 'lesson') return false;
+  if (user.role === 'system_admin') return true;
   if (row.entry_type === 'activity') return user.role === 'club_admin';
   return row.user_id === user.id;
 }
@@ -51,6 +55,7 @@ function toBooking(row: BookingRow, user: AuthUser) {
     slotIndex: row.slot_index,
     memberName: row.member_name,
     entryType: row.entry_type,
+    lessonId: row.lesson_id,
     createdAt: row.created_at,
     isOwn,
     canCancel: canCancelEntry(row, user),
@@ -71,7 +76,7 @@ async function findRequestedBookings(slots: RequestedSlot[], user: AuthUser) {
   const values = slots.flatMap((slot) => [slot.date, slot.slotIndex]);
   const result = await getPool().query<BookingRow>(
     `SELECT b.id, b.booking_date::text AS booking_date, b.slot_index,
-            b.member_name, b.user_id, b.entry_type,
+            b.member_name, b.user_id, b.entry_type, b.lesson_id,
             b.created_at::text AS created_at,
             COALESCE(u.phone, u.contact) AS phone,
             COALESCE(u.wechat, u.contact) AS wechat
@@ -109,6 +114,9 @@ function validateSlots(
       return json({ error: '预约时段格式不正确。' }, 400);
     }
     const slotIndex = candidate.slotIndex as number;
+    if (!isDateAccessible(candidate.date)) {
+      return json({ error: '只能预约本周、前三周和后两周范围内的时段。' }, 400);
+    }
     const scheduleSlot = slotForDate(candidate.date, slotIndex, policy);
     if (!scheduleSlot) {
       return json({ error: '所选节次不在当天的预约表中。' }, 400);
@@ -157,13 +165,17 @@ export async function GET(request: Request) {
     if (rangeDays > 31) {
       return json({ error: '一次最多查询 32 天的预约。' }, 400);
     }
+    const accessibleRange = accessibleScheduleRange();
+    if (from < accessibleRange.from || to > accessibleRange.to) {
+      return json({ error: '只能查看本周、前三周和后两周的预约。' }, 400);
+    }
 
     const policy = await getBookingPolicy();
     const quotaWeek = weekRange(from);
     const [bookingResult, countResult] = await Promise.all([
       getPool().query<BookingRow>(
         `SELECT b.id, b.booking_date::text AS booking_date, b.slot_index,
-                b.member_name, b.user_id, b.entry_type,
+                b.member_name, b.user_id, b.entry_type, b.lesson_id,
                 b.created_at::text AS created_at,
                 COALESCE(u.phone, u.contact) AS phone,
                 COALESCE(u.wechat, u.contact) AS wechat
@@ -285,7 +297,8 @@ export async function POST(request: Request) {
          (id, booking_date, slot_index, member_name, user_id, entry_type)
        VALUES ${placeholders}
        RETURNING id, booking_date::text AS booking_date, slot_index, member_name,
-                 user_id, entry_type, created_at::text AS created_at`,
+                 user_id, entry_type, lesson_id,
+                 created_at::text AS created_at`,
       values,
     );
     await client.query('COMMIT');
@@ -307,7 +320,7 @@ export async function POST(request: Request) {
       const conflicts = await findRequestedBookings(slots, user);
       return json(
         {
-          error: '部分时段刚刚被其他同学预约或登记活动，请重新选择。',
+          error: '部分时段刚刚被预约、活动或固定鼓课占用，请重新选择。',
           conflicts,
         },
         409,

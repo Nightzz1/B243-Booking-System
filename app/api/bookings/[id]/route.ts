@@ -1,7 +1,7 @@
 import { getAuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
 import { json, mutationOriginError } from '@/lib/http';
-import { hasSlotStarted } from '@/lib/schedule';
+import { hasSlotStarted, isDateAccessible } from '@/lib/schedule';
 
 export const runtime = 'nodejs';
 
@@ -10,7 +10,7 @@ type EntryRow = {
   booking_date: string;
   slot_index: number;
   user_id: string | null;
-  entry_type: 'booking' | 'activity';
+  entry_type: 'booking' | 'activity' | 'lesson';
 };
 
 export async function DELETE(
@@ -42,20 +42,28 @@ export async function DELETE(
       return json({ error: '该预约或活动不存在。' }, 404);
     }
 
-    const isSystemAdmin = user.role === 'system_admin';
     const isStarted = hasSlotStarted(entry.booking_date, entry.slot_index);
+    const isSystemAdmin = user.role === 'system_admin';
     const mayDeleteActivity =
       entry.entry_type === 'activity' && user.role === 'club_admin';
     const mayDeleteOwnBooking =
       entry.entry_type === 'booking' && entry.user_id === user.id;
 
+    if (!isDateAccessible(entry.booking_date)) {
+      await client.query('ROLLBACK');
+      return json({ error: '该时段不在当前可管理的六周范围内。' }, 409);
+    }
+    if (entry.entry_type === 'lesson') {
+      await client.query('ROLLBACK');
+      return json({ error: '固定鼓课请在管理设置中修改。' }, 409);
+    }
+    if (isStarted) {
+      await client.query('ROLLBACK');
+      return json({ error: '已经开始或过去的时段不能修改。' }, 409);
+    }
     if (!isSystemAdmin && !mayDeleteActivity && !mayDeleteOwnBooking) {
       await client.query('ROLLBACK');
       return json({ error: '你没有取消这个时段的权限。' }, 403);
-    }
-    if (!isSystemAdmin && isStarted) {
-      await client.query('ROLLBACK');
-      return json({ error: '已经开始或过去的时段不能取消。' }, 409);
     }
 
     await client.query('DELETE FROM bookings WHERE id = $1', [id]);

@@ -1,4 +1,5 @@
 import { getPool } from '@/db';
+import { RETAINED_PAST_WEEKS } from '@/lib/booking-window';
 import {
   addDateDays,
   getBookingPolicy,
@@ -26,7 +27,7 @@ function millisecondsUntilNextMonday() {
 export async function runWeeklyBookingCleanup() {
   await getBookingPolicy();
   const currentWeek = weekRange(shanghaiNow().date).from;
-  const cutoff = addDateDays(currentWeek, -28);
+  const cutoff = addDateDays(currentWeek, -RETAINED_PAST_WEEKS * 7);
   const client = await getPool().connect();
 
   try {
@@ -35,15 +36,27 @@ export async function runWeeklyBookingCleanup() {
       `SELECT last_pruned_week::text AS last_pruned_week
        FROM booking_settings WHERE id = 'default' FOR UPDATE`,
     );
-    if (settings.rows[0]?.last_pruned_week === currentWeek) {
-      await client.query('COMMIT');
-      return { ran: false, deleted: 0, week: currentWeek, cutoff };
-    }
-
     const result = await client.query(
       'DELETE FROM bookings WHERE booking_date < $1::date',
       [cutoff],
     );
+    await client.query(
+      'DELETE FROM drum_lesson_pauses WHERE pause_week < $1::date',
+      [cutoff],
+    );
+    await client.query(
+      'DELETE FROM lesson_cancellation_audits WHERE booking_date < $1::date',
+      [cutoff],
+    );
+    if (settings.rows[0]?.last_pruned_week === currentWeek) {
+      await client.query('COMMIT');
+      return {
+        ran: (result.rowCount ?? 0) > 0,
+        deleted: result.rowCount ?? 0,
+        week: currentWeek,
+        cutoff,
+      };
+    }
     await client.query(
       `UPDATE booking_settings
        SET last_pruned_week = $1::date

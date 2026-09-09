@@ -27,6 +27,7 @@ export const userStatus = pgEnum('user_status', [
 export const scheduleEntryType = pgEnum('schedule_entry_type', [
   'booking',
   'activity',
+  'lesson',
 ]);
 
 export const users = pgTable(
@@ -144,6 +145,96 @@ export const bookingSettings = pgTable(
   ],
 );
 
+export const drumLessons = pgTable(
+  'drum_lessons',
+  {
+    id: uuid('id').primaryKey(),
+    className: varchar('class_name', { length: 80 }).notNull(),
+    semesterStart: date('semester_start', { mode: 'string' }).notNull(),
+    semesterEnd: date('semester_end', { mode: 'string' }).notNull(),
+    startWeek: date('start_week', { mode: 'string' }).notNull(),
+    weekday: integer('weekday').notNull(),
+    firstSlotIndex: integer('first_slot_index').notNull(),
+    lastOccurrenceDate: date('last_occurrence_date', { mode: 'string' }),
+    createdBy: uuid('created_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('idx_drum_lessons_semester').on(
+      table.semesterStart,
+      table.semesterEnd,
+    ),
+    check(
+      'drum_lessons_class_name_nonempty',
+      sql`char_length(btrim(${table.className})) BETWEEN 1 AND 80`,
+    ),
+    check(
+      'drum_lessons_semester_range',
+      sql`${table.semesterEnd} >= ${table.semesterStart}`,
+    ),
+    check(
+      'drum_lessons_start_week_monday',
+      sql`extract(isodow from ${table.startWeek}) = 1`,
+    ),
+    check(
+      'drum_lessons_start_in_semester',
+      sql`${table.startWeek} BETWEEN ${table.semesterStart} AND ${table.semesterEnd}`,
+    ),
+    check('drum_lessons_weekday_range', sql`${table.weekday} BETWEEN 1 AND 7`),
+    check(
+      'drum_lessons_first_slot_range',
+      sql`${table.firstSlotIndex} BETWEEN 0 AND 11`,
+    ),
+    check(
+      'drum_lessons_last_occurrence_range',
+      sql`${table.lastOccurrenceDate} IS NULL OR (${table.lastOccurrenceDate} BETWEEN ${table.startWeek} AND ${table.semesterEnd} AND extract(isodow from ${table.lastOccurrenceDate}) = ${table.weekday})`,
+    ),
+  ],
+);
+
+export const drumLessonPauses = pgTable(
+  'drum_lesson_pauses',
+  {
+    id: uuid('id').primaryKey(),
+    lessonId: uuid('lesson_id')
+      .notNull()
+      .references(() => drumLessons.id, { onDelete: 'cascade' }),
+    pauseWeek: date('pause_week', { mode: 'string' }).notNull(),
+    createdBy: uuid('created_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_drum_lesson_pauses_lesson_week_unique').on(
+      table.lessonId,
+      table.pauseWeek,
+    ),
+    check(
+      'drum_lesson_pauses_week_monday',
+      sql`extract(isodow from ${table.pauseWeek}) = 1`,
+    ),
+  ],
+);
+
 export const bookings = pgTable(
   'bookings',
   {
@@ -155,6 +246,9 @@ export const bookings = pgTable(
       onDelete: 'set null',
     }),
     entryType: scheduleEntryType('entry_type').default('booking').notNull(),
+    lessonId: uuid('lesson_id').references(() => drumLessons.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', {
       withTimezone: true,
       mode: 'string',
@@ -168,6 +262,7 @@ export const bookings = pgTable(
       table.slotIndex,
     ),
     index('idx_bookings_user_date').on(table.userId, table.bookingDate),
+    index('idx_bookings_lesson_date').on(table.lessonId, table.bookingDate),
     check(
       'bookings_slot_index_range',
       sql`${table.slotIndex} BETWEEN 0 AND 12`,
@@ -175,6 +270,46 @@ export const bookings = pgTable(
     check(
       'bookings_member_name_nonempty',
       sql`char_length(btrim(${table.memberName})) BETWEEN 1 AND 80`,
+    ),
+  ],
+);
+
+export const lessonCancellationAudits = pgTable(
+  'lesson_cancellation_audits',
+  {
+    id: uuid('id').primaryKey(),
+    lessonId: uuid('lesson_id').references(() => drumLessons.id, {
+      onDelete: 'set null',
+    }),
+    bookingId: uuid('booking_id').notNull(),
+    bookingUserId: uuid('booking_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    bookingMemberName: varchar('booking_member_name', {
+      length: 80,
+    }).notNull(),
+    bookingDate: date('booking_date', { mode: 'string' }).notNull(),
+    slotIndex: integer('slot_index').notNull(),
+    cancelledBy: uuid('cancelled_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    reason: varchar('reason', { length: 200 }).notNull(),
+    cancelledAt: timestamp('cancelled_at', {
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('idx_lesson_cancellation_audits_date').on(table.bookingDate),
+    check(
+      'lesson_cancellation_audits_reason_nonempty',
+      sql`char_length(btrim(${table.reason})) BETWEEN 1 AND 200`,
+    ),
+    check(
+      'lesson_cancellation_audits_slot_index_range',
+      sql`${table.slotIndex} BETWEEN 0 AND 12`,
     ),
   ],
 );
