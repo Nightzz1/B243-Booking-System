@@ -1,7 +1,8 @@
 import { getPool } from '@/db';
 import {
-  MAX_VISIBLE_WEEK_OFFSET,
-  MIN_VISIBLE_WEEK_OFFSET,
+  type BookingWindowRole,
+  maxVisibleWeekOffsetForRole,
+  minVisibleWeekOffsetForRole,
 } from '@/lib/booking-window';
 
 export type ScheduleMode = 'semester' | 'vacation';
@@ -117,16 +118,21 @@ export function weekRange(value: string) {
   return { from, to: addDateDays(from, 6) };
 }
 
-export function accessibleScheduleRange() {
+export function accessibleScheduleRange(role: BookingWindowRole = 'member') {
   const currentWeek = weekRange(shanghaiNow().date).from;
+  const minVisibleWeekOffset = minVisibleWeekOffsetForRole(role);
+  const maxVisibleWeekOffset = maxVisibleWeekOffsetForRole(role);
   return {
-    from: addDateDays(currentWeek, MIN_VISIBLE_WEEK_OFFSET * 7),
-    to: addDateDays(currentWeek, MAX_VISIBLE_WEEK_OFFSET * 7 + 6),
+    from: addDateDays(currentWeek, minVisibleWeekOffset * 7),
+    to: addDateDays(currentWeek, maxVisibleWeekOffset * 7 + 6),
   };
 }
 
-export function isDateAccessible(date: string) {
-  const range = accessibleScheduleRange();
+export function isDateAccessible(
+  date: string,
+  role: BookingWindowRole = 'member',
+) {
+  const range = accessibleScheduleRange(role);
   return date >= range.from && date <= range.to;
 }
 

@@ -49,9 +49,9 @@ export async function DELETE(
     const mayDeleteOwnBooking =
       entry.entry_type === 'booking' && entry.user_id === user.id;
 
-    if (!isDateAccessible(entry.booking_date)) {
+    if (!isDateAccessible(entry.booking_date, user.role)) {
       await client.query('ROLLBACK');
-      return json({ error: '该时段不在当前可管理的六周范围内。' }, 409);
+      return json({ error: '该时段不在当前账号可管理的范围内。' }, 409);
     }
     if (entry.entry_type === 'lesson') {
       await client.query('ROLLBACK');

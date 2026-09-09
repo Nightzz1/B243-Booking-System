@@ -92,6 +92,7 @@ async function findRequestedBookings(slots: RequestedSlot[], user: AuthUser) {
 function validateSlots(
   value: unknown,
   policy: BookingPolicy,
+  user: AuthUser,
 ): RequestedSlot[] | Response {
   if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
     return json({ error: '每次请选择 1–2 个预约时段。' }, 400);
@@ -114,8 +115,8 @@ function validateSlots(
       return json({ error: '预约时段格式不正确。' }, 400);
     }
     const slotIndex = candidate.slotIndex as number;
-    if (!isDateAccessible(candidate.date)) {
-      return json({ error: '只能预约本周、前三周和后两周范围内的时段。' }, 400);
+    if (!isDateAccessible(candidate.date, user.role)) {
+      return json({ error: '所选日期不在当前账号可访问的预约表范围内。' }, 400);
     }
     const scheduleSlot = slotForDate(candidate.date, slotIndex, policy);
     if (!scheduleSlot) {
@@ -165,9 +166,9 @@ export async function GET(request: Request) {
     if (rangeDays > 31) {
       return json({ error: '一次最多查询 32 天的预约。' }, 400);
     }
-    const accessibleRange = accessibleScheduleRange();
+    const accessibleRange = accessibleScheduleRange(user.role);
     if (from < accessibleRange.from || to > accessibleRange.to) {
-      return json({ error: '只能查看本周、前三周和后两周的预约。' }, 400);
+      return json({ error: '请求日期不在当前账号可访问的预约表范围内。' }, 400);
     }
 
     const policy = await getBookingPolicy();
@@ -233,7 +234,7 @@ export async function POST(request: Request) {
   }
   if (!user) return json({ error: '请先登录后预约。' }, 401);
 
-  const slots = validateSlots(body.slots, policy);
+  const slots = validateSlots(body.slots, policy, user);
   if (slots instanceof Response) return slots;
   const slotsByWeek = new Map<
     string,

@@ -38,8 +38,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { LessonManagement } from '@/components/lesson-management';
 import {
-  MAX_VISIBLE_WEEK_OFFSET,
-  MIN_VISIBLE_WEEK_OFFSET,
+  maxVisibleWeekOffsetForRole,
+  minVisibleWeekOffsetForRole,
 } from '@/lib/booking-window';
 import { cn } from '@/lib/utils';
 
@@ -475,6 +475,12 @@ export default function Home() {
   const todayKey = dateKey(clubToday());
   const canManage =
     user?.role === 'system_admin' || user?.role === 'club_admin';
+  const minVisibleWeekOffset = minVisibleWeekOffsetForRole(
+    user?.role ?? 'member',
+  );
+  const maxVisibleWeekOffset = maxVisibleWeekOffsetForRole(
+    user?.role ?? 'member',
+  );
   const bookingRemaining = Math.max(0, 2 - weeklyBookedCount);
   const displaySlots = useMemo(() => {
     const mondaySchedule = scheduleDays[dateKey(days[0])];
@@ -484,8 +490,8 @@ export default function Home() {
     const mode = scheduleDays[dateKey(days[0])]?.mode;
     return mode === 'vacation' ? '假期时段表' : '学期时段表';
   }, [days, scheduleDays]);
-  const atEarliestWeek = weekOffset <= MIN_VISIBLE_WEEK_OFFSET;
-  const atLatestWeek = weekOffset >= MAX_VISIBLE_WEEK_OFFSET;
+  const atEarliestWeek = weekOffset <= minVisibleWeekOffset;
+  const atLatestWeek = weekOffset >= maxVisibleWeekOffset;
 
   function slotDescription(entry: Booking) {
     const slot = scheduleDays[entry.date]?.slots.find(
@@ -684,7 +690,7 @@ export default function Home() {
   }
 
   function showWeek(offset: number) {
-    if (offset < MIN_VISIBLE_WEEK_OFFSET || offset > MAX_VISIBLE_WEEK_OFFSET) {
+    if (offset < minVisibleWeekOffset || offset > maxVisibleWeekOffset) {
       return;
     }
     setSelected(new Set());
@@ -803,6 +809,7 @@ export default function Home() {
       await fetch('/api/auth/logout', { method: 'POST' });
     } finally {
       setUser(null);
+      setWeekOffset(0);
       setBookings({});
       setScheduleDays({});
       setSelected(new Set());
@@ -981,6 +988,7 @@ export default function Home() {
       <AuthScreen
         onLogin={(nextUser) => {
           setLoading(true);
+          setWeekOffset(0);
           setUser(nextUser);
         }}
       />
@@ -1116,7 +1124,7 @@ export default function Home() {
           <p>
             {entryMode === 'booking'
               ? `每周日 13:00 开放下一周周一至周四，每周四 13:00 开放本周周五至周日。每人每周最多预约 2 段，你本周还可预约 ${bookingRemaining} 段；学期内周一至周五的第三至第六节为公用时段。活动只能在“管理活动”中修改。`
-              : '请选择尚未开始的空白时段登记社团活动；活动可以提前登记，但学期内周一至周五的第三至第六节是公用时段，不能占用。周末第三至第六节可以正常登记。'}
+              : '请选择尚未开始的空白时段登记社团活动；管理员可向后查看并安排未来 16 周。活动可以提前登记，但学期内周一至周五的第三至第六节是公用时段，不能占用。周末第三至第六节可以正常登记。'}
           </p>
         </div>
 
@@ -1261,6 +1269,9 @@ export default function Home() {
                         'cursor-pointer hover:bg-primary/8',
                       showDirectDelete &&
                         'cursor-pointer hover:bg-destructive/8',
+                      scheduleSlot?.hasStarted &&
+                        !scheduleSlot.isPublic &&
+                        'bg-muted/80 text-muted-foreground hover:bg-muted/80',
                       isSelected && 'bg-primary/18 hover:bg-primary/22',
                     )}
                     disabled={

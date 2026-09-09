@@ -286,7 +286,7 @@ export function LessonManagement({
 
       <div className="mt-4 grid gap-3 rounded-xl border bg-card p-3 sm:grid-cols-2">
         <label
-          className="grid gap-1.5 text-sm font-semibold"
+          className="grid min-w-0 gap-1.5 text-sm font-semibold"
           htmlFor="lesson-class-name"
         >
           班型名称
@@ -300,7 +300,7 @@ export function LessonManagement({
           />
         </label>
         <label
-          className="grid gap-1.5 text-sm font-semibold"
+          className="grid min-w-0 gap-1.5 text-sm font-semibold"
           htmlFor="lesson-start-week"
         >
           开始周（请选择周一）
@@ -314,10 +314,10 @@ export function LessonManagement({
             value={effectiveStartWeek}
           />
         </label>
-        <label className="grid gap-1.5 text-sm font-semibold">
+        <label className="grid min-w-0 gap-1.5 text-sm font-semibold">
           每周上课日
           <select
-            className="h-9 rounded-md border bg-background px-3 text-sm"
+            className="h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
             disabled={loading}
             onChange={(event) => changeWeekday(Number(event.target.value))}
             value={weekday}
@@ -329,10 +329,10 @@ export function LessonManagement({
             ))}
           </select>
         </label>
-        <label className="grid gap-1.5 text-sm font-semibold">
+        <label className="grid min-w-0 gap-1.5 text-sm font-semibold">
           连续两个节次
           <select
-            className="h-9 rounded-md border bg-background px-3 text-sm"
+            className="h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
             disabled={loading}
             onChange={(event) => setFirstSlotIndex(Number(event.target.value))}
             value={firstSlotIndex}

@@ -70,8 +70,8 @@ export async function POST(request: Request) {
       return json({ error: '活动时段格式不正确。' }, 400);
     }
     const slotIndex = value.slotIndex as number;
-    if (!isDateAccessible(value.date)) {
-      return json({ error: '只能管理本周、前三周和后两周范围内的活动。' }, 400);
+    if (!isDateAccessible(value.date, user.role)) {
+      return json({ error: '只能管理前三周至未来 16 周范围内的活动。' }, 400);
     }
     const scheduleSlot = slotForDate(value.date, slotIndex, policy);
     if (!scheduleSlot) {
