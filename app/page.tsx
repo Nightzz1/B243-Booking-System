@@ -612,7 +612,9 @@ export default function Home() {
     const booking = bookings[key];
     if (booking) {
       if (booking.entryType === 'activity') {
-        if (booking.canCancel) setCancelEntry(booking);
+        if (entryMode === 'activity' && booking.canCancel) {
+          setCancelEntry(booking);
+        }
       } else if (booking.isOwn) {
         if (booking.canCancel) setCancelEntry(booking);
       } else {
@@ -634,7 +636,7 @@ export default function Home() {
       if (!scheduleSlot) {
         setNotice('假期时段表中没有这个节次。');
       } else if (scheduleSlot.isPublic) {
-        setNotice('学期中的第三节至第六节为公用时段，不开放预约。');
+        setNotice('学期内周一至周五的第三节至第六节为公用时段，不开放预约。');
       } else if (scheduleSlot.hasStarted) {
         setNotice('不能选择已经开始或过去的时段。');
       } else if (entryMode === 'booking' && !daySchedule.bookingOpen) {
@@ -683,6 +685,8 @@ export default function Home() {
   function changeEntryMode(mode: EntryMode) {
     setEntryMode(mode);
     setSelected(new Set());
+    setCancelEntry(null);
+    setContactEntry(null);
     setNotice('');
     setNoticeIsError(false);
   }
@@ -747,6 +751,10 @@ export default function Home() {
 
   async function cancelSelectedEntry() {
     if (!cancelEntry || submitting) return;
+    if (cancelEntry.entryType === 'activity' && entryMode !== 'activity') {
+      setCancelEntry(null);
+      return;
+    }
     setSubmitting(true);
     try {
       const response = await fetch(`/api/bookings/${cancelEntry.id}`, {
@@ -1076,7 +1084,7 @@ export default function Home() {
               onClick={() => changeEntryMode('activity')}
               type="button"
             >
-              <CalendarPlus className="size-4" /> 登记活动
+              <CalendarPlus className="size-4" /> 管理活动
             </button>
           </div>
         )}
@@ -1088,8 +1096,8 @@ export default function Home() {
           />
           <p>
             {entryMode === 'booking'
-              ? `每周日 13:00 开放下一周周一至周四，每周四 13:00 开放本周周五至周日。每人每周最多预约 2 段，你本周还可预约 ${bookingRemaining} 段；第三至第六节在学期中为公用时段。`
-              : '请选择尚未开始的空白时段登记社团活动；活动可以提前登记，但学期中的第三至第六节是公用时段，不能占用。'}
+              ? `每周日 13:00 开放下一周周一至周四，每周四 13:00 开放本周周五至周日。每人每周最多预约 2 段，你本周还可预约 ${bookingRemaining} 段；学期内周一至周五的第三至第六节为公用时段。活动只能在“管理活动”中修改。`
+              : '请选择尚未开始的空白时段登记社团活动；活动可以提前登记，但学期内周一至周五的第三至第六节是公用时段，不能占用。周末第三至第六节可以正常登记。'}
           </p>
         </div>
 
@@ -1194,13 +1202,20 @@ export default function Home() {
                   booking &&
                   (booking.entryType === 'booking'
                     ? !booking.isOwn || booking.canCancel
-                    : booking.canCancel),
+                    : entryMode === 'activity' && booking.canCancel),
+                );
+                const showDirectDelete = Boolean(
+                  booking &&
+                  booking.canCancel &&
+                  (booking.entryType === 'activity'
+                    ? entryMode === 'activity'
+                    : booking.isOwn),
                 );
                 return (
                   <button
                     aria-label={
                       booking
-                        ? `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${booking.entryType === 'activity' ? '活动' : '预约'}：${booking.memberName}${booking.entryType === 'booking' && !booking.isOwn ? '，点击查看联系方式' : booking.canCancel ? '，点击可取消' : ''}`
+                        ? `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${booking.entryType === 'activity' ? '活动' : '预约'}：${booking.memberName}${booking.entryType === 'booking' && !booking.isOwn ? '，点击查看联系方式' : showDirectDelete ? '，点击可取消' : ''}`
                         : `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${unavailableLabel || (isSelected ? '已选择' : '可选择')}`
                     }
                     aria-pressed={isSelected}
@@ -1222,8 +1237,7 @@ export default function Home() {
                       booking?.entryType === 'booking' &&
                         !booking.isOwn &&
                         'cursor-pointer hover:bg-primary/8',
-                      booking?.canCancel &&
-                        (booking.isOwn || booking.entryType === 'activity') &&
+                      showDirectDelete &&
                         'cursor-pointer hover:bg-destructive/8',
                       isSelected && 'bg-primary/18 hover:bg-primary/22',
                     )}
@@ -1256,14 +1270,12 @@ export default function Home() {
                           <Users aria-hidden="true" className="size-3.5" />
                         )}
                         <span className="truncate">{booking.memberName}</span>
-                        {booking.canCancel &&
-                          (booking.isOwn ||
-                            booking.entryType === 'activity') && (
-                            <Trash2
-                              aria-hidden="true"
-                              className="size-3 text-destructive"
-                            />
-                          )}
+                        {showDirectDelete && (
+                          <Trash2
+                            aria-hidden="true"
+                            className="size-3 text-destructive"
+                          />
+                        )}
                       </span>
                     ) : isSelected ? (
                       <span className="mx-auto flex w-fit items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1.5 text-sm font-bold text-primary-foreground shadow-sm">

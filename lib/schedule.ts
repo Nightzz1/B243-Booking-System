@@ -149,9 +149,13 @@ export function scheduleModeForDate(
 }
 
 export function slotsForDate(date: string, policy: BookingPolicy) {
-  return scheduleModeForDate(date, policy) === 'semester'
-    ? SEMESTER_SLOTS
-    : VACATION_SLOTS;
+  if (scheduleModeForDate(date, policy) === 'vacation') {
+    return VACATION_SLOTS;
+  }
+  if (isoWeekday(date) <= 5) return SEMESTER_SLOTS;
+  return SEMESTER_SLOTS.map((slot) =>
+    slot.isPublic ? { ...slot, isPublic: false } : slot,
+  );
 }
 
 export function bookingOpenDate(date: string) {

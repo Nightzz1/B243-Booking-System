@@ -75,7 +75,9 @@ export async function POST(request: Request) {
     }
     if (scheduleSlot.isPublic) {
       return json(
-        { error: '学期中的第三节至第六节为公用时段，不能登记活动。' },
+        {
+          error: '学期内周一至周五的第三节至第六节为公用时段，不能登记活动。',
+        },
         409,
       );
     }
