@@ -1,13 +1,25 @@
+import { getAuthUser, type AuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
+import { json, mutationOriginError } from '@/lib/http';
+import {
+  hasSlotStarted,
+  isRealDate,
+  SLOT_COUNT,
+  weekRange,
+} from '@/lib/schedule';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+type EntryType = 'booking' | 'activity';
 
 type BookingRow = {
   id: string;
   booking_date: string;
   slot_index: number;
   member_name: string;
+  user_id: string | null;
+  entry_type: EntryType;
   created_at: string;
 };
 
@@ -16,39 +28,27 @@ type RequestedSlot = {
   slotIndex: number;
 };
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const MAX_SLOTS_PER_REQUEST = 20;
-const SLOT_COUNT = 10;
-
-function json(body: unknown, status = 200) {
-  return Response.json(body, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
+function canCancelEntry(row: BookingRow, user: AuthUser) {
+  if (user.role === 'system_admin') return true;
+  if (hasSlotStarted(row.booking_date, row.slot_index)) return false;
+  if (row.entry_type === 'activity') return user.role === 'club_admin';
+  return row.user_id === user.id;
 }
 
-function isRealDate(value: string) {
-  if (!ISO_DATE.test(value)) return false;
-  const [year, month, day] = value.split('-').map(Number);
-  const parsed = new Date(Date.UTC(year, month - 1, day));
-  return (
-    parsed.getUTCFullYear() === year &&
-    parsed.getUTCMonth() === month - 1 &&
-    parsed.getUTCDate() === day
-  );
-}
-
-function toBooking(row: BookingRow) {
+function toBooking(row: BookingRow, user: AuthUser) {
   return {
     id: row.id,
     date: row.booking_date,
     slotIndex: row.slot_index,
     memberName: row.member_name,
+    entryType: row.entry_type,
     createdAt: row.created_at,
+    isOwn: row.user_id === user.id,
+    canCancel: canCancelEntry(row, user),
   };
 }
 
-async function findRequestedBookings(slots: RequestedSlot[]) {
+async function findRequestedBookings(slots: RequestedSlot[], user: AuthUser) {
   const predicate = slots
     .map(
       (_, index) =>
@@ -58,64 +58,27 @@ async function findRequestedBookings(slots: RequestedSlot[]) {
   const values = slots.flatMap((slot) => [slot.date, slot.slotIndex]);
   const result = await getPool().query<BookingRow>(
     `SELECT id, booking_date::text AS booking_date, slot_index, member_name,
-            created_at::text AS created_at
+            user_id, entry_type, created_at::text AS created_at
      FROM bookings
      WHERE ${predicate}
      ORDER BY booking_date, slot_index`,
     values,
   );
-  return result.rows.map(toBooking);
+  return result.rows.map((row) => toBooking(row, user));
 }
 
-export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const from = url.searchParams.get('from') ?? '';
-  const to = url.searchParams.get('to') ?? '';
-
-  if (!isRealDate(from) || !isRealDate(to) || from > to) {
-    return json({ error: '请提供有效的起止日期。' }, 400);
-  }
-
-  try {
-    const result = await getPool().query<BookingRow>(
-      `SELECT id, booking_date::text AS booking_date, slot_index, member_name,
-              created_at::text AS created_at
-       FROM bookings
-       WHERE booking_date >= $1::date AND booking_date <= $2::date
-       ORDER BY booking_date, slot_index`,
-      [from, to],
-    );
-
-    return json({ bookings: result.rows.map(toBooking) });
-  } catch (error) {
-    console.error('Failed to load bookings', error);
-    return json({ error: '预约表暂时无法加载，请稍后重试。' }, 500);
-  }
-}
-
-export async function POST(request: Request) {
-  let body: { memberName?: unknown; slots?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
-  }
-
-  const memberName = typeof body.memberName === 'string' ? body.memberName.trim() : '';
-  if (!memberName || memberName.length > 20) {
-    return json({ error: '社员姓名需为 1–20 个字符。' }, 400);
-  }
-  if (!Array.isArray(body.slots) || body.slots.length === 0 || body.slots.length > MAX_SLOTS_PER_REQUEST) {
-    return json({ error: '请选择 1–20 个预约时段。' }, 400);
+function validateSlots(value: unknown): RequestedSlot[] | Response {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
+    return json({ error: '每次请选择 1–2 个预约时段。' }, 400);
   }
 
   const slots: RequestedSlot[] = [];
   const seen = new Set<string>();
-  for (const value of body.slots) {
-    if (!value || typeof value !== 'object') {
+  for (const item of value) {
+    if (!item || typeof item !== 'object') {
       return json({ error: '预约时段格式不正确。' }, 400);
     }
-    const candidate = value as { date?: unknown; slotIndex?: unknown };
+    const candidate = item as { date?: unknown; slotIndex?: unknown };
     if (
       typeof candidate.date !== 'string' ||
       !isRealDate(candidate.date) ||
@@ -126,45 +89,173 @@ export async function POST(request: Request) {
       return json({ error: '预约时段格式不正确。' }, 400);
     }
     const slotIndex = candidate.slotIndex as number;
+    if (hasSlotStarted(candidate.date, slotIndex)) {
+      return json({ error: '不能预约已经开始或过去的时段。' }, 400);
+    }
     const key = `${candidate.date}|${slotIndex}`;
     if (seen.has(key)) return json({ error: '预约时段不能重复。' }, 400);
     seen.add(key);
     slots.push({ date: candidate.date, slotIndex });
   }
+  return slots;
+}
 
-  const placeholders = slots
-    .map(
-      (_, index) =>
-        `($${index * 4 + 1}::uuid, $${index * 4 + 2}::date, $${index * 4 + 3}, $${index * 4 + 4})`,
-    )
-    .join(', ');
-  const values = slots.flatMap((slot) => [
-    crypto.randomUUID(),
-    slot.date,
-    slot.slotIndex,
-    memberName,
-  ]);
-
+export async function GET(request: Request) {
   try {
-    const result = await getPool().query<BookingRow>(
-      `INSERT INTO bookings (id, booking_date, slot_index, member_name)
+    const user = await getAuthUser(request);
+    if (!user) return json({ error: '请先登录后查看预约表。' }, 401);
+
+    const url = new URL(request.url);
+    const from = url.searchParams.get('from') ?? '';
+    const to = url.searchParams.get('to') ?? '';
+    if (!isRealDate(from) || !isRealDate(to) || from > to) {
+      return json({ error: '请提供有效的起止日期。' }, 400);
+    }
+    const rangeDays =
+      (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) /
+      86_400_000;
+    if (rangeDays > 31) {
+      return json({ error: '一次最多查询 32 天的预约。' }, 400);
+    }
+
+    const quotaWeek = weekRange(from);
+    const [bookingResult, countResult] = await Promise.all([
+      getPool().query<BookingRow>(
+        `SELECT id, booking_date::text AS booking_date, slot_index, member_name,
+                user_id, entry_type, created_at::text AS created_at
+         FROM bookings
+         WHERE booking_date >= $1::date AND booking_date <= $2::date
+         ORDER BY booking_date, slot_index`,
+        [from, to],
+      ),
+      getPool().query<{ count: string }>(
+        `SELECT count(*)::text AS count
+         FROM bookings
+         WHERE user_id = $1 AND entry_type = 'booking'
+           AND booking_date BETWEEN $2::date AND $3::date`,
+        [user.id, quotaWeek.from, quotaWeek.to],
+      ),
+    ]);
+
+    return json({
+      bookings: bookingResult.rows.map((row) => toBooking(row, user)),
+      weeklyBookedCount: Number(countResult.rows[0]?.count ?? 0),
+      weeklyBookingLimit: 2,
+    });
+  } catch (error) {
+    console.error('Failed to load bookings', error);
+    return json({ error: '预约表暂时无法加载，请稍后重试。' }, 500);
+  }
+}
+
+export async function POST(request: Request) {
+  const originError = mutationOriginError(request);
+  if (originError) return originError;
+
+  let body: { slots?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: '请求内容格式不正确。' }, 400);
+  }
+
+  const slots = validateSlots(body.slots);
+  if (slots instanceof Response) return slots;
+
+  let user: AuthUser | null;
+  try {
+    user = await getAuthUser(request);
+  } catch (error) {
+    console.error('Failed to authenticate booking request', error);
+    return json({ error: '登录状态检查失败，请稍后重试。' }, 500);
+  }
+  if (!user) return json({ error: '请先登录后预约。' }, 401);
+
+  const slotsByWeek = new Map<
+    string,
+    { from: string; to: string; count: number }
+  >();
+  for (const slot of slots) {
+    const range = weekRange(slot.date);
+    const value = slotsByWeek.get(range.from);
+    slotsByWeek.set(range.from, {
+      ...range,
+      count: (value?.count ?? 0) + 1,
+    });
+  }
+
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const lockedUser = await client.query(
+      `SELECT id FROM users WHERE id = $1 AND status = 'approved' FOR UPDATE`,
+      [user.id],
+    );
+    if (!lockedUser.rows[0]) {
+      await client.query('ROLLBACK');
+      return json({ error: '账号当前不可用，请重新登录。' }, 401);
+    }
+
+    for (const range of slotsByWeek.values()) {
+      const result = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+         FROM bookings
+         WHERE user_id = $1 AND entry_type = 'booking'
+           AND booking_date BETWEEN $2::date AND $3::date`,
+        [user.id, range.from, range.to],
+      );
+      if (Number(result.rows[0]?.count ?? 0) + range.count > 2) {
+        await client.query('ROLLBACK');
+        return json(
+          {
+            error: `每人每周最多预约 2 个时段（${range.from} 至 ${range.to}）。`,
+          },
+          409,
+        );
+      }
+    }
+
+    const placeholders = slots
+      .map(
+        (_, index) =>
+          `($${index * 5 + 1}::uuid, $${index * 5 + 2}::date, $${index * 5 + 3}, $${index * 5 + 4}, $${index * 5 + 5}::uuid, 'booking')`,
+      )
+      .join(', ');
+    const values = slots.flatMap((slot) => [
+      crypto.randomUUID(),
+      slot.date,
+      slot.slotIndex,
+      user.displayName,
+      user.id,
+    ]);
+    const result = await client.query<BookingRow>(
+      `INSERT INTO bookings
+         (id, booking_date, slot_index, member_name, user_id, entry_type)
        VALUES ${placeholders}
        RETURNING id, booking_date::text AS booking_date, slot_index, member_name,
-                 created_at::text AS created_at`,
+                 user_id, entry_type, created_at::text AS created_at`,
       values,
     );
-
-    return json({ bookings: result.rows.map(toBooking) }, 201);
+    await client.query('COMMIT');
+    return json(
+      { bookings: result.rows.map((row) => toBooking(row, user)) },
+      201,
+    );
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // The original database error is more useful than a rollback error.
+    }
     const code =
       error && typeof error === 'object' && 'code' in error
         ? String(error.code)
         : '';
     if (code === '23505') {
-      const conflicts = await findRequestedBookings(slots);
+      const conflicts = await findRequestedBookings(slots, user);
       return json(
         {
-          error: '部分时段刚刚被其他同学预约，请重新选择。',
+          error: '部分时段刚刚被其他同学预约或登记活动，请重新选择。',
           conflicts,
         },
         409,
@@ -172,5 +263,7 @@ export async function POST(request: Request) {
     }
     console.error('Failed to create bookings', error);
     return json({ error: '预约提交失败，请稍后重试。' }, 500);
+  } finally {
+    client.release();
   }
 }

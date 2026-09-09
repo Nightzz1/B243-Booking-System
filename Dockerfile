@@ -1,7 +1,7 @@
-FROM node:22-alpine AS base
+FROM node:26.8.1-alpine AS base
 ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
-RUN corepack enable
+RUN npm install --global pnpm@11
 
 FROM base AS dependencies
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
@@ -20,7 +20,7 @@ COPY drizzle ./drizzle
 COPY scripts ./scripts
 CMD ["node", "scripts/migrate.mjs"]
 
-FROM node:22-alpine AS runner
+FROM node:26.8.1-alpine AS runner
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \

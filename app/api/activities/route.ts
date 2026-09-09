@@ -1,0 +1,97 @@
+import { canManageActivities, getAuthUser } from '@/lib/auth';
+import { getPool } from '@/db';
+import { json, mutationOriginError } from '@/lib/http';
+import { hasSlotStarted, isRealDate, SLOT_COUNT } from '@/lib/schedule';
+
+export const runtime = 'nodejs';
+
+type RequestedSlot = { date: string; slotIndex: number };
+
+export async function POST(request: Request) {
+  const originError = mutationOriginError(request);
+  if (originError) return originError;
+
+  let body: { title?: unknown; slots?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: '请求内容格式不正确。' }, 400);
+  }
+
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  if (!title || title.length > 80) {
+    return json({ error: '活动名称需为 1–80 个字符。' }, 400);
+  }
+  if (
+    !Array.isArray(body.slots) ||
+    body.slots.length === 0 ||
+    body.slots.length > 20
+  ) {
+    return json({ error: '请选择 1–20 个活动时段。' }, 400);
+  }
+
+  const slots: RequestedSlot[] = [];
+  const seen = new Set<string>();
+  for (const item of body.slots) {
+    if (!item || typeof item !== 'object') {
+      return json({ error: '活动时段格式不正确。' }, 400);
+    }
+    const value = item as { date?: unknown; slotIndex?: unknown };
+    if (
+      typeof value.date !== 'string' ||
+      !isRealDate(value.date) ||
+      !Number.isInteger(value.slotIndex) ||
+      (value.slotIndex as number) < 0 ||
+      (value.slotIndex as number) >= SLOT_COUNT
+    ) {
+      return json({ error: '活动时段格式不正确。' }, 400);
+    }
+    const slotIndex = value.slotIndex as number;
+    if (hasSlotStarted(value.date, slotIndex)) {
+      return json({ error: '不能登记已经开始或过去的活动时段。' }, 400);
+    }
+    const key = `${value.date}|${slotIndex}`;
+    if (seen.has(key)) return json({ error: '活动时段不能重复。' }, 400);
+    seen.add(key);
+    slots.push({ date: value.date, slotIndex });
+  }
+
+  try {
+    const user = await getAuthUser(request);
+    if (!user || !canManageActivities(user)) {
+      return json({ error: '没有登记社团活动的权限。' }, 403);
+    }
+
+    const placeholders = slots
+      .map(
+        (_, index) =>
+          `($${index * 5 + 1}::uuid, $${index * 5 + 2}::date, $${index * 5 + 3}, $${index * 5 + 4}, $${index * 5 + 5}::uuid, 'activity')`,
+      )
+      .join(', ');
+    const values = slots.flatMap((slot) => [
+      crypto.randomUUID(),
+      slot.date,
+      slot.slotIndex,
+      title,
+      user.id,
+    ]);
+    const result = await getPool().query(
+      `INSERT INTO bookings
+         (id, booking_date, slot_index, member_name, user_id, entry_type)
+       VALUES ${placeholders}
+       RETURNING id`,
+      values,
+    );
+    return json({ count: result.rowCount ?? slots.length }, 201);
+  } catch (error) {
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : '';
+    if (code === '23505') {
+      return json({ error: '部分时段已被预约或登记活动，请重新选择。' }, 409);
+    }
+    console.error('Failed to create activity', error);
+    return json({ error: '活动登记失败，请稍后重试。' }, 500);
+  }
+}
