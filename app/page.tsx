@@ -39,32 +39,59 @@ import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-const TIME_SLOTS = [
-  '10:00–11:00',
-  '11:00–12:00',
-  '13:00–14:00',
-  '14:00–15:00',
-  '15:00–16:00',
-  '16:00–17:00',
-  '17:00–18:00',
-  '19:00–20:00',
-  '20:00–21:00',
-  '21:00–22:00',
-];
-const SLOT_START_MINUTES = [
-  600, 660, 780, 840, 900, 960, 1020, 1140, 1200, 1260,
+const FALLBACK_SLOTS = [
+  { slotIndex: 0, period: '第一节', time: '8:00–8:50' },
+  { slotIndex: 1, period: '第二节', time: '9:00–9:50' },
+  { slotIndex: 2, period: '第三节', time: '10:10–11:00' },
+  { slotIndex: 3, period: '第四节', time: '11:10–12:00' },
+  { slotIndex: 4, period: '第五节', time: '13:00–13:50' },
+  { slotIndex: 5, period: '第六节', time: '14:00–14:50' },
+  { slotIndex: 6, period: '第七节', time: '15:10–16:00' },
+  { slotIndex: 7, period: '第八节', time: '16:10–17:00' },
+  { slotIndex: 8, period: '第九节', time: '17:10–18:00' },
+  { slotIndex: 9, period: '第十节', time: '18:40–19:30' },
+  { slotIndex: 10, period: '第十一节', time: '19:40–20:30' },
+  { slotIndex: 11, period: '第十二节', time: '20:40–21:30' },
+  { slotIndex: 12, period: '第十三节', time: '21:40–22:30' },
 ];
 const SESSION_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 type UserRole = 'system_admin' | 'club_admin' | 'member';
 type UserStatus = 'pending' | 'approved' | 'rejected';
 type EntryMode = 'booking' | 'activity';
+type ScheduleMode = 'semester' | 'vacation';
+
+type BookingSettings = {
+  semesterStart: string;
+  semesterEnd: string;
+  updatedAt: string | null;
+};
+
+type ScheduleSlot = {
+  slotIndex: number;
+  period: string;
+  time: string;
+  isPublic: boolean;
+  hasStarted: boolean;
+  selectableForBooking: boolean;
+  selectableForActivity: boolean;
+};
+
+type ScheduleDay = {
+  date: string;
+  mode: ScheduleMode;
+  bookingOpenDate: string;
+  bookingOpenAt: string;
+  bookingOpen: boolean;
+  slots: ScheduleSlot[];
+};
 
 type AuthUser = {
   id: string;
   account: string;
   displayName: string;
-  contact: string;
+  phone: string;
+  wechat: string;
   role: UserRole;
   status: UserStatus;
 };
@@ -78,6 +105,7 @@ type Booking = {
   createdAt: string;
   isOwn: boolean;
   canCancel: boolean;
+  contact: { phone: string; wechat: string } | null;
 };
 
 type ManagedUser = AuthUser & {
@@ -121,35 +149,18 @@ function dateKey(date: Date) {
   ].join('-');
 }
 
-function shanghaiNow() {
+function clubToday() {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
   }).formatToParts(new Date());
-  const value = Object.fromEntries(
+  const values = Object.fromEntries(
     parts.map((part) => [part.type, part.value]),
   );
-  return {
-    date: `${value.year}-${value.month}-${value.day}`,
-    minuteOfDay: Number(value.hour) * 60 + Number(value.minute),
-  };
-}
-
-function clubToday() {
-  const value = shanghaiNow().date.split('-').map(Number);
+  const value = [values.year, values.month, values.day].map(Number);
   return new Date(Date.UTC(value[0], value[1] - 1, value[2], 12));
-}
-
-function slotHasStarted(date: string, slotIndex: number) {
-  const now = shanghaiNow();
-  if (date < now.date) return true;
-  if (date > now.date) return false;
-  return SLOT_START_MINUTES[slotIndex] <= now.minuteOfDay;
 }
 
 function weekLabel(days: Date[]) {
@@ -170,7 +181,8 @@ function AuthScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [contact, setContact] = useState('');
+  const [phone, setPhone] = useState('');
+  const [wechat, setWechat] = useState('');
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -201,7 +213,7 @@ function AuthScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
         body: JSON.stringify(
           mode === 'login'
             ? { account, password }
-            : { account, password, displayName, contact },
+            : { account, password, displayName, phone, wechat },
         ),
       });
       const data = await readJson<{
@@ -307,18 +319,35 @@ function AuthScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
                 </label>
                 <label
                   className="grid gap-2 text-sm font-semibold"
-                  htmlFor="contact"
+                  htmlFor="phone"
                 >
-                  联系方式
+                  电话号码
                   <Input
                     autoComplete="tel"
                     className="h-11 rounded-xl"
-                    id="contact"
-                    maxLength={100}
-                    onChange={(event) => setContact(event.target.value)}
-                    placeholder="手机号、微信或其他有效联系方式"
+                    id="phone"
+                    inputMode="tel"
+                    maxLength={32}
+                    onChange={(event) => setPhone(event.target.value)}
+                    placeholder="手机号或其他常用电话"
                     required
-                    value={contact}
+                    value={phone}
+                  />
+                </label>
+                <label
+                  className="grid gap-2 text-sm font-semibold"
+                  htmlFor="wechat"
+                >
+                  微信号
+                  <Input
+                    autoCapitalize="none"
+                    className="h-11 rounded-xl"
+                    id="wechat"
+                    maxLength={64}
+                    onChange={(event) => setWechat(event.target.value)}
+                    placeholder="请输入可联系到你的微信号"
+                    required
+                    value={wechat}
                   />
                 </label>
               </>
@@ -392,7 +421,7 @@ function AuthScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
           </p>
           {mode === 'register' && (
             <p className="mt-2 text-center text-xs leading-5 text-muted-foreground">
-              新账号默认为普通社员，需经系统管理员或鼓房管理员审核后才能登录。
+              电话号码和微信号均为必填。新账号默认为普通社员，审核通过后才能登录。
             </p>
           )}
         </div>
@@ -410,11 +439,19 @@ export default function Home() {
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bookings, setBookings] = useState<Record<string, Booking>>({});
+  const [scheduleDays, setScheduleDays] = useState<Record<string, ScheduleDay>>(
+    {},
+  );
+  const [bookingSettings, setBookingSettings] =
+    useState<BookingSettings | null>(null);
+  const [semesterStart, setSemesterStart] = useState('');
+  const [semesterEnd, setSemesterEnd] = useState('');
   const [weeklyBookedCount, setWeeklyBookedCount] = useState(0);
   const [entryMode, setEntryMode] = useState<EntryMode>('booking');
   const [activityTitle, setActivityTitle] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelEntry, setCancelEntry] = useState<Booking | null>(null);
+  const [contactEntry, setContactEntry] = useState<Booking | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
@@ -432,6 +469,22 @@ export default function Home() {
   const canManage =
     user?.role === 'system_admin' || user?.role === 'club_admin';
   const bookingRemaining = Math.max(0, 2 - weeklyBookedCount);
+  const displaySlots = useMemo(() => {
+    const mondaySchedule = scheduleDays[dateKey(days[0])];
+    return mondaySchedule?.slots ?? FALLBACK_SLOTS;
+  }, [days, scheduleDays]);
+  const weekScheduleLabel = useMemo(() => {
+    const mode = scheduleDays[dateKey(days[0])]?.mode;
+    return mode === 'vacation' ? '假期时段表' : '学期时段表';
+  }, [days, scheduleDays]);
+
+  function slotDescription(entry: Booking) {
+    const slot = scheduleDays[entry.date]?.slots.find(
+      (item) => item.slotIndex === entry.slotIndex,
+    );
+    const fallback = FALLBACK_SLOTS[entry.slotIndex];
+    return `${slot?.period ?? fallback?.period ?? `第 ${entry.slotIndex + 1} 节`} ${slot?.time ?? fallback?.time ?? ''}`.trim();
+  }
 
   useEffect(() => {
     let active = true;
@@ -492,6 +545,8 @@ export default function Home() {
         const data = await readJson<{
           bookings?: Booking[];
           weeklyBookedCount?: number;
+          settings?: BookingSettings;
+          scheduleDays?: ScheduleDay[];
           error?: string;
         }>(response);
         if (response.status === 401) {
@@ -509,6 +564,14 @@ export default function Home() {
           ),
         );
         setWeeklyBookedCount(data.weeklyBookedCount ?? 0);
+        if (data.settings) setBookingSettings(data.settings);
+        if (data.scheduleDays) {
+          setScheduleDays(
+            Object.fromEntries(
+              data.scheduleDays.map((schedule) => [schedule.date, schedule]),
+            ),
+          );
+        }
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError')
           return;
@@ -548,10 +611,42 @@ export default function Home() {
     const key = bookingKey(dayIndex, slotIndex);
     const booking = bookings[key];
     if (booking) {
-      if (booking.canCancel) setCancelEntry(booking);
+      if (booking.entryType === 'activity') {
+        if (booking.canCancel) setCancelEntry(booking);
+      } else if (booking.isOwn) {
+        if (booking.canCancel) setCancelEntry(booking);
+      } else {
+        setContactEntry(booking);
+      }
       return;
     }
-    if (slotHasStarted(dateKey(days[dayIndex]), slotIndex)) return;
+
+    const date = dateKey(days[dayIndex]);
+    const daySchedule = scheduleDays[date];
+    const scheduleSlot = daySchedule?.slots.find(
+      (slot) => slot.slotIndex === slotIndex,
+    );
+    const selectable =
+      entryMode === 'booking'
+        ? scheduleSlot?.selectableForBooking
+        : scheduleSlot?.selectableForActivity;
+    if (!selectable) {
+      if (!scheduleSlot) {
+        setNotice('假期时段表中没有这个节次。');
+      } else if (scheduleSlot.isPublic) {
+        setNotice('学期中的第三节至第六节为公用时段，不开放预约。');
+      } else if (scheduleSlot.hasStarted) {
+        setNotice('不能选择已经开始或过去的时段。');
+      } else if (entryMode === 'booking' && !daySchedule.bookingOpen) {
+        setNotice(
+          `该日期尚未开放预约，将于 ${daySchedule.bookingOpenDate} 13:00 开放。`,
+        );
+      } else {
+        setNotice('当前时段不可选择。');
+      }
+      setNoticeIsError(true);
+      return;
+    }
 
     setNotice('');
     setNoticeIsError(false);
@@ -580,6 +675,7 @@ export default function Home() {
     setLoading(true);
     setWeekOffset((current) => current + direction);
     setSelected(new Set());
+    setScheduleDays({});
     setNotice('');
     setNoticeIsError(false);
   }
@@ -682,6 +778,7 @@ export default function Home() {
     } finally {
       setUser(null);
       setBookings({});
+      setScheduleDays({});
       setSelected(new Set());
     }
   }
@@ -691,16 +788,63 @@ export default function Home() {
     setAdminLoading(true);
     setAdminNotice('');
     try {
-      const response = await fetch('/api/admin/users', { cache: 'no-store' });
-      const data = await readJson<{ users?: ManagedUser[]; error?: string }>(
-        response,
-      );
-      if (!response.ok || !data.users)
-        throw new Error(data.error ?? '用户列表加载失败。');
-      setManagedUsers(data.users);
+      const [usersResponse, settingsResponse] = await Promise.all([
+        fetch('/api/admin/users', { cache: 'no-store' }),
+        fetch('/api/admin/settings', { cache: 'no-store' }),
+      ]);
+      const usersData = await readJson<{
+        users?: ManagedUser[];
+        error?: string;
+      }>(usersResponse);
+      const settingsData = await readJson<{
+        settings?: BookingSettings;
+        error?: string;
+      }>(settingsResponse);
+      if (!usersResponse.ok || !usersData.users) {
+        throw new Error(usersData.error ?? '用户列表加载失败。');
+      }
+      if (!settingsResponse.ok || !settingsData.settings) {
+        throw new Error(settingsData.error ?? '预约设置加载失败。');
+      }
+      setManagedUsers(usersData.users);
+      setBookingSettings(settingsData.settings);
+      setSemesterStart(settingsData.settings.semesterStart);
+      setSemesterEnd(settingsData.settings.semesterEnd);
     } catch (error) {
       setAdminNotice(
         error instanceof Error ? error.message : '用户列表加载失败。',
+      );
+    } finally {
+      setAdminLoading(false);
+    }
+  }
+
+  async function saveSemesterSettings() {
+    if (!semesterStart || !semesterEnd || adminLoading) return;
+    setAdminLoading(true);
+    setAdminNotice('');
+    try {
+      const response = await fetch('/api/admin/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ semesterStart, semesterEnd }),
+      });
+      const data = await readJson<{
+        settings?: BookingSettings;
+        error?: string;
+      }>(response);
+      if (!response.ok || !data.settings) {
+        throw new Error(data.error ?? '学期时间保存失败。');
+      }
+      setBookingSettings(data.settings);
+      setSemesterStart(data.settings.semesterStart);
+      setSemesterEnd(data.settings.semesterEnd);
+      setAdminNotice('学期时间已保存，预约表已按新日期范围更新。');
+      setLoading(true);
+      await refreshBookings();
+    } catch (error) {
+      setAdminNotice(
+        error instanceof Error ? error.message : '学期时间保存失败。',
       );
     } finally {
       setAdminLoading(false);
@@ -762,7 +906,7 @@ export default function Home() {
                     slotIndex: {
                       type: 'integer',
                       minimum: 0,
-                      maximum: TIME_SLOTS.length - 1,
+                      maximum: 12,
                     },
                   },
                   required: ['date', 'slotIndex'],
@@ -841,7 +985,7 @@ export default function Home() {
                 onClick={() => void openAdmin()}
                 variant="outline"
               >
-                <ClipboardCheck /> 账号审核
+                <ClipboardCheck /> 管理设置
               </Button>
             )}
             <div className="hidden text-right sm:block">
@@ -876,6 +1020,9 @@ export default function Home() {
           <div className="flex flex-wrap items-center gap-2">
             <Badge className="h-9 rounded-xl px-3" variant="secondary">
               本周已预约 {weeklyBookedCount}/2
+            </Badge>
+            <Badge className="h-9 rounded-xl px-3" variant="outline">
+              {weekScheduleLabel}
             </Badge>
             <Button
               aria-label="上一周"
@@ -941,8 +1088,8 @@ export default function Home() {
           />
           <p>
             {entryMode === 'booking'
-              ? `点击未来空白时段进行多选；每人每周最多预约 2 段，你本周还可预约 ${bookingRemaining} 段。点击自己可取消的预约可以撤销。`
-              : '请选择未来空白时段登记社团活动。活动会持续占用这些时段，普通社员不能预约。'}
+              ? `每周日 13:00 开放下一周周一至周四，每周四 13:00 开放本周周五至周日。每人每周最多预约 2 段，你本周还可预约 ${bookingRemaining} 段；第三至第六节在学期中为公用时段。`
+              : '请选择尚未开始的空白时段登记社团活动；活动可以提前登记，但学期中的第三至第六节是公用时段，不能占用。'}
           </p>
         </div>
 
@@ -1006,46 +1153,84 @@ export default function Home() {
             })}
           </div>
 
-          {TIME_SLOTS.map((time, slotIndex) => (
+          {displaySlots.map(({ slotIndex, period, time }) => (
             <div
               className="grid grid-cols-[96px_1fr] border-b border-border last:border-b-0 md:grid-cols-[108px_repeat(7,minmax(105px,1fr))]"
-              key={time}
+              key={slotIndex}
             >
-              <div className="flex min-h-16 items-center border-r border-border bg-muted/30 px-3 text-sm font-semibold tabular-nums text-muted-foreground md:px-4">
-                {time}
+              <div className="flex min-h-16 flex-col justify-center border-r border-border bg-muted/30 px-3 text-muted-foreground md:px-4">
+                <span className="text-sm font-bold text-foreground/80">
+                  {period}
+                </span>
+                <span className="mt-0.5 text-xs font-semibold tabular-nums">
+                  {time}
+                </span>
               </div>
               {days.map((day, dayIndex) => {
+                const date = dateKey(day);
                 const key = bookingKey(dayIndex, slotIndex);
                 const booking = bookings[key];
                 const isSelected = selected.has(key);
                 const isVisible = dayIndex === activeDay;
-                const isPast = slotHasStarted(dateKey(day), slotIndex);
+                const daySchedule = scheduleDays[date];
+                const scheduleSlot = daySchedule?.slots.find(
+                  (slot) => slot.slotIndex === slotIndex,
+                );
+                const selectable = Boolean(
+                  entryMode === 'booking'
+                    ? scheduleSlot?.selectableForBooking
+                    : scheduleSlot?.selectableForActivity,
+                );
+                const unavailableLabel = !scheduleSlot
+                  ? '假期无此节次'
+                  : scheduleSlot.isPublic
+                    ? '公用时段'
+                    : scheduleSlot.hasStarted
+                      ? '已开始'
+                      : entryMode === 'booking' && !daySchedule?.bookingOpen
+                        ? '未开放'
+                        : '';
+                const bookingIsInteractive = Boolean(
+                  booking &&
+                  (booking.entryType === 'booking'
+                    ? !booking.isOwn || booking.canCancel
+                    : booking.canCancel),
+                );
                 return (
                   <button
                     aria-label={
                       booking
-                        ? `${WEEKDAYS[dayIndex]} ${time}，${booking.entryType === 'activity' ? '活动' : '预约'}：${booking.memberName}${booking.canCancel ? '，点击可取消' : ''}`
-                        : `${WEEKDAYS[dayIndex]} ${time}${isPast ? '，已开始' : isSelected ? '，已选择' : '，可选择'}`
+                        ? `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${booking.entryType === 'activity' ? '活动' : '预约'}：${booking.memberName}${booking.entryType === 'booking' && !booking.isOwn ? '，点击查看联系方式' : booking.canCancel ? '，点击可取消' : ''}`
+                        : `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${unavailableLabel || (isSelected ? '已选择' : '可选择')}`
                     }
                     aria-pressed={isSelected}
                     className={cn(
                       'group relative min-h-16 border-r border-border px-2 text-left transition last:border-r-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block',
                       !isVisible && 'hidden',
                       !booking &&
-                        !isPast &&
+                        selectable &&
                         'hover:bg-primary/8 active:bg-primary/15',
-                      !booking && isPast && 'cursor-not-allowed bg-muted/45',
+                      !booking &&
+                        !selectable &&
+                        'cursor-not-allowed bg-muted/45',
+                      !booking &&
+                        scheduleSlot?.isPublic &&
+                        'bg-sky-50/80 text-sky-900',
                       booking?.entryType === 'booking' &&
                         'bg-foreground/[0.035]',
                       booking?.entryType === 'activity' && 'bg-amber-100/65',
+                      booking?.entryType === 'booking' &&
+                        !booking.isOwn &&
+                        'cursor-pointer hover:bg-primary/8',
                       booking?.canCancel &&
+                        (booking.isOwn || booking.entryType === 'activity') &&
                         'cursor-pointer hover:bg-destructive/8',
                       isSelected && 'bg-primary/18 hover:bg-primary/22',
                     )}
                     disabled={
                       loading ||
-                      (!booking && isPast) ||
-                      Boolean(booking && !booking.canCancel)
+                      (!booking && !selectable) ||
+                      Boolean(booking && !bookingIsInteractive)
                     }
                     key={dateKey(day)}
                     onClick={() => toggleSlot(dayIndex, slotIndex)}
@@ -1071,20 +1256,22 @@ export default function Home() {
                           <Users aria-hidden="true" className="size-3.5" />
                         )}
                         <span className="truncate">{booking.memberName}</span>
-                        {booking.canCancel && (
-                          <Trash2
-                            aria-hidden="true"
-                            className="size-3 text-destructive"
-                          />
-                        )}
+                        {booking.canCancel &&
+                          (booking.isOwn ||
+                            booking.entryType === 'activity') && (
+                            <Trash2
+                              aria-hidden="true"
+                              className="size-3 text-destructive"
+                            />
+                          )}
                       </span>
                     ) : isSelected ? (
                       <span className="mx-auto flex w-fit items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1.5 text-sm font-bold text-primary-foreground shadow-sm">
                         <Check aria-hidden="true" className="size-3.5" /> 已选择
                       </span>
-                    ) : isPast ? (
+                    ) : unavailableLabel ? (
                       <span className="mx-auto block w-fit text-xs font-medium text-muted-foreground/60">
-                        已开始
+                        {unavailableLabel}
                       </span>
                     ) : (
                       <span className="sr-only">选择这个时段</span>
@@ -1192,6 +1379,63 @@ export default function Home() {
       </Dialog>
 
       <Dialog
+        onOpenChange={(open) => !open && setContactEntry(null)}
+        open={Boolean(contactEntry)}
+      >
+        <DialogContent className="max-w-md rounded-2xl p-5">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-extrabold">
+              {contactEntry?.memberName} 的联系方式
+            </DialogTitle>
+            <DialogDescription>
+              预约时段：{contactEntry?.date}{' '}
+              {contactEntry ? slotDescription(contactEntry) : ''}
+            </DialogDescription>
+          </DialogHeader>
+          {contactEntry?.contact ? (
+            <div className="grid gap-3 rounded-2xl bg-muted/60 p-4">
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground">
+                  电话号码
+                </p>
+                <p className="mt-1 break-all font-semibold">
+                  {contactEntry.contact.phone}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground">
+                  微信号
+                </p>
+                <p className="mt-1 break-all font-semibold">
+                  {contactEntry.contact.wechat}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <p className="rounded-2xl bg-muted/60 p-4 text-sm text-muted-foreground">
+              这是升级账号机制前留下的预约，暂时没有关联联系方式。
+            </p>
+          )}
+          <DialogFooter>
+            {contactEntry?.canCancel && (
+              <Button
+                onClick={() => {
+                  setCancelEntry(contactEntry);
+                  setContactEntry(null);
+                }}
+                variant="destructive"
+              >
+                <Trash2 /> 管理员取消预约
+              </Button>
+            )}
+            <Button onClick={() => setContactEntry(null)} variant="outline">
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         onOpenChange={(open) => !open && setCancelEntry(null)}
         open={Boolean(cancelEntry)}
       >
@@ -1204,7 +1448,7 @@ export default function Home() {
             </DialogTitle>
             <DialogDescription>
               确定要取消 {cancelEntry?.date}{' '}
-              {cancelEntry ? TIME_SLOTS[cancelEntry.slotIndex] : ''} 的“
+              {cancelEntry ? slotDescription(cancelEntry) : ''} 的“
               {cancelEntry?.memberName}”吗？
             </DialogDescription>
           </DialogHeader>
@@ -1231,12 +1475,70 @@ export default function Home() {
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto rounded-2xl p-5 sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-xl font-extrabold">
-              <ShieldCheck className="size-5" /> 账号审核与身份管理
+              <ShieldCheck className="size-5" /> 账号、权限与预约设置
             </DialogTitle>
             <DialogDescription>
-              系统管理员和鼓房管理员可以审核注册；只有系统管理员可以授予或撤销鼓房管理员身份。
+              系统管理员和鼓房管理员可以设置学期时间、审核注册；只有系统管理员可以授予或撤销鼓房管理员身份。
             </DialogDescription>
           </DialogHeader>
+
+          <section className="rounded-2xl border bg-muted/35 p-4">
+            <div>
+              <p className="font-bold">本学期时间</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                学期必须从周一开始、在周日结束。学期内使用 13
+                节学期表，其他完整周使用 11 节假期表。
+              </p>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+              <label
+                className="grid gap-1.5 text-sm font-semibold"
+                htmlFor="semester-start"
+              >
+                开始日期
+                <Input
+                  disabled={adminLoading}
+                  id="semester-start"
+                  onChange={(event) => setSemesterStart(event.target.value)}
+                  type="date"
+                  value={semesterStart}
+                />
+              </label>
+              <label
+                className="grid gap-1.5 text-sm font-semibold"
+                htmlFor="semester-end"
+              >
+                结束日期
+                <Input
+                  disabled={adminLoading}
+                  id="semester-end"
+                  min={semesterStart}
+                  onChange={(event) => setSemesterEnd(event.target.value)}
+                  type="date"
+                  value={semesterEnd}
+                />
+              </label>
+              <Button
+                disabled={
+                  adminLoading ||
+                  !semesterStart ||
+                  !semesterEnd ||
+                  (bookingSettings?.semesterStart === semesterStart &&
+                    bookingSettings?.semesterEnd === semesterEnd)
+                }
+                onClick={() => void saveSemesterSettings()}
+              >
+                保存学期时间
+              </Button>
+            </div>
+          </section>
+
+          <div className="mt-2">
+            <h3 className="font-bold">账号审核与身份管理</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              已审核账号的身份设置会单独显示在账号卡片下方。
+            </p>
+          </div>
 
           <div className="grid gap-3">
             {adminLoading && managedUsers.length === 0 && (
@@ -1277,7 +1579,10 @@ export default function Home() {
                         账号：{item.account}
                       </p>
                       <p className="mt-0.5 break-all text-sm text-muted-foreground">
-                        联系方式：{item.contact}
+                        电话：{item.phone}
+                      </p>
+                      <p className="mt-0.5 break-all text-sm text-muted-foreground">
+                        微信：{item.wechat}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -1304,29 +1609,54 @@ export default function Home() {
                           拒绝
                         </Button>
                       )}
-                      {user.role === 'system_admin' &&
-                        item.status === 'approved' && (
-                          <Button
-                            disabled={adminLoading}
-                            onClick={() =>
-                              void updateManagedUser(
-                                item.id,
-                                'set_role',
-                                item.role === 'club_admin'
-                                  ? 'member'
-                                  : 'club_admin',
-                              )
-                            }
-                            size="sm"
-                            variant="outline"
-                          >
-                            {item.role === 'club_admin'
-                              ? '设为普通社员'
-                              : '设为鼓房管理员'}
-                          </Button>
-                        )}
                     </div>
                   </div>
+                  {user.role === 'system_admin' && (
+                    <div className="mt-4 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-bold">鼓房管理员权限</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {item.status === 'approved'
+                            ? '选择该账号在系统中的身份。'
+                            : '请先通过该账号的注册申请，再设置身份。'}
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 sm:flex">
+                        <Button
+                          disabled={adminLoading || item.status !== 'approved'}
+                          onClick={() =>
+                            void updateManagedUser(
+                              item.id,
+                              'set_role',
+                              'member',
+                            )
+                          }
+                          size="sm"
+                          variant={
+                            item.role === 'member' ? 'default' : 'outline'
+                          }
+                        >
+                          普通社员
+                        </Button>
+                        <Button
+                          disabled={adminLoading || item.status !== 'approved'}
+                          onClick={() =>
+                            void updateManagedUser(
+                              item.id,
+                              'set_role',
+                              'club_admin',
+                            )
+                          }
+                          size="sm"
+                          variant={
+                            item.role === 'club_admin' ? 'default' : 'outline'
+                          }
+                        >
+                          鼓房管理员
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

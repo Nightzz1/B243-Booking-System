@@ -18,7 +18,8 @@ type LoginRow = {
   account: string;
   password_hash: string;
   display_name: string;
-  contact: string;
+  phone: string;
+  wechat: string;
   role: UserRole;
   status: UserStatus;
 };
@@ -28,7 +29,8 @@ function publicUser(row: LoginRow): AuthUser {
     id: row.id,
     account: row.account,
     displayName: row.display_name,
-    contact: row.contact,
+    phone: row.phone,
+    wechat: row.wechat,
     role: row.role,
     status: row.status,
   };
@@ -55,7 +57,10 @@ export async function POST(request: Request) {
   try {
     await ensureSystemAdmin();
     const result = await getPool().query<LoginRow>(
-      `SELECT id, account, password_hash, display_name, contact, role, status
+      `SELECT id, account, password_hash, display_name,
+              COALESCE(phone, contact) AS phone,
+              COALESCE(wechat, contact) AS wechat,
+              role, status
        FROM users
        WHERE account = $1
        LIMIT 1`,

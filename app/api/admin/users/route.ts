@@ -14,7 +14,8 @@ type ManagedUserRow = {
   id: string;
   account: string;
   display_name: string;
-  contact: string;
+  phone: string;
+  wechat: string;
   role: UserRole;
   status: UserStatus;
   created_at: string;
@@ -26,7 +27,8 @@ function toManagedUser(row: ManagedUserRow) {
     id: row.id,
     account: row.account,
     displayName: row.display_name,
-    contact: row.contact,
+    phone: row.phone,
+    wechat: row.wechat,
     role: row.role,
     status: row.status,
     createdAt: row.created_at,
@@ -45,7 +47,10 @@ export async function GET(request: Request) {
     if (!user) return json({ error: '没有账号审核权限。' }, 403);
 
     const result = await getPool().query<ManagedUserRow>(
-      `SELECT id, account, display_name, contact, role, status,
+      `SELECT id, account, display_name,
+              COALESCE(phone, contact) AS phone,
+              COALESCE(wechat, contact) AS wechat,
+              role, status,
               created_at::text AS created_at, approved_at::text AS approved_at
        FROM users
        WHERE role <> 'system_admin'
@@ -138,7 +143,10 @@ export async function PATCH(request: Request) {
     }
 
     const updated = await getPool().query<ManagedUserRow>(
-      `SELECT id, account, display_name, contact, role, status,
+      `SELECT id, account, display_name,
+              COALESCE(phone, contact) AS phone,
+              COALESCE(wechat, contact) AS wechat,
+              role, status,
               created_at::text AS created_at, approved_at::text AS approved_at
        FROM users WHERE id = $1`,
       [userId],

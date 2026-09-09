@@ -5,13 +5,17 @@
 当前版本是可继续扩展的基础框架：
 
 - 响应式网页，支持电脑和手机访问
-- 学号/工号注册、联系方式登记、登录与服务器端会话
+- 学号/工号注册，姓名、电话号码、微信号登记，登录与服务器端会话
 - 注册申请由系统管理员或鼓房管理员审核
 - 系统管理员、鼓房管理员、普通社员三级权限
 - 每人每个自然周（周一至周日）最多预约 2 个时段
 - 用户可取消自己尚未开始的预约
 - 鼓房管理员可预先登记保留的社团活动时段，同时也能进行个人预约
 - 系统管理员可设置或撤销鼓房管理员身份，并拥有全部时段管理权限
+- 管理员可按完整周设置学期起止日期，系统会自动切换学期与假期时段表
+- 周日 13:00 开放下一周周一至周四，周四 13:00 开放本周周五至周日的个人预约
+- 学期第三至第六节为公用时段，不开放个人预约或活动登记
+- 自动删除超过 4 周的历史预约和活动记录
 - 按周展示预约表，支持一次选择多个时段
 - PostgreSQL 持久化存储
 - 数据库唯一约束防止同一时段被重复预约
@@ -125,13 +129,17 @@ Apple Silicon 和 Intel Mac 都可以使用。不要从 Windows 复制 `node_mod
 
 正常使用流程如下：
 
-1. 社员使用学号/工号、密码、姓名和联系方式提交注册申请。
+1. 社员使用学号/工号、密码、姓名、电话号码和微信号提交注册申请。
 2. 系统管理员或鼓房管理员在“账号审核”中批准申请。
 3. 审核通过后，社员才能登录并预约；默认身份始终是普通社员。
 4. 只有系统管理员可以把已通过的社员设为鼓房管理员，或撤销该身份。
 5. 鼓房管理员仍可进行个人预约，也可切换到“登记活动”，预先占用社团活动时段。
 
-预约限制按北京时间计算。每个账号在每个自然周（周一至周日）最多预约 2 个时段；社团活动不计入个人配额。普通用户只能取消自己的、尚未到开始时间的预约；鼓房管理员可以移除尚未开始的活动；系统管理员拥有全部时段的覆盖管理权限。
+系统管理员和鼓房管理员都可以从“管理设置”中修改本学期的开始和结束日期（起止日均包含）。开始日期必须是周一，结束日期必须是周日，因此每个自然周只会使用一种时段表。学期完整周使用 13 节时段表，其中第三至第六节为公用时段；其他完整周使用 11 节假期表。`INITIAL_SEMESTER_START` 和 `INITIAL_SEMESTER_END` 只负责数据库中尚无设置时的初始值，网页中保存后以数据库设置为准。
+
+预约限制按北京时间计算。每周日 13:00 开放下一周周一至周四的预约，每周四 13:00 开放本周周五至周日的预约；开放之前所有身份都不能进行个人预约。管理员登记社团活动不受开放日限制，因此可以提前保留时段，但仍不能占用学期公用时段或已经开始的时段。每个账号在每个自然周（周一至周日）最多预约 2 个时段；社团活动不计入个人配额。预约表格显示预约者姓名；点击其他同学的预约会显示其电话号码和微信号，点击自己的未来预约则进入取消确认。普通用户只能取消自己的、尚未到开始时间的预约；鼓房管理员可以移除尚未开始的活动；系统管理员拥有全部时段的覆盖管理权限。
+
+服务器会在每周一北京时间 00:00 清理超过四周的历史记录，包括个人预约和社团活动。服务启动时会检查本周是否已经清理，以便电脑关机或服务中断时在恢复后补做；同一周不会重复执行清理。未来预约不会被清理。
 
 用户密码使用 `scrypt` 加盐存储，浏览器会话使用随机令牌和 `HttpOnly` Cookie。权限、预约配额和取消条件都由服务器再次检查，不能只靠修改浏览器页面绕过。
 
@@ -182,7 +190,7 @@ curl http://localhost/api/health
 正常响应为：
 
 ```json
-{"status":"ok"}
+{ "status": "ok" }
 ```
 
 查看日志：
@@ -255,6 +263,10 @@ SYSTEM_ADMIN_ACCOUNT=system-admin
 SYSTEM_ADMIN_PASSWORD=替换为独立的长随机密码
 SYSTEM_ADMIN_NAME=系统管理员
 SYSTEM_ADMIN_CONTACT=系统维护
+SYSTEM_ADMIN_PHONE=仅限系统维护
+SYSTEM_ADMIN_WECHAT=仅限系统维护
+INITIAL_SEMESTER_START=2026-09-07
+INITIAL_SEMESTER_END=2027-01-10
 SESSION_COOKIE_SECURE=true
 SESSION_IDLE_TTL_DAYS=7
 SESSION_ABSOLUTE_TTL_DAYS=30
@@ -319,26 +331,30 @@ pnpm db:migrate
 
 ## 环境变量
 
-| 变量 | 用途 | 默认/示例 |
-| --- | --- | --- |
-| `POSTGRES_DB` | Compose 创建的数据库名 | `drum_room` |
-| `POSTGRES_USER` | Compose 创建的数据库用户 | `drum_room` |
-| `POSTGRES_PASSWORD` | 数据库密码 | 必须在部署前修改 |
-| `POSTGRES_PORT` | PostgreSQL 映射到开发机的端口 | `5432` |
-| `DB_POOL_MAX` | 每个应用实例的最大数据库连接数 | `10` |
-| `SYSTEM_ADMIN_ACCOUNT` | 唯一系统管理员登录账号 | `system-admin` |
-| `SYSTEM_ADMIN_PASSWORD` | 唯一系统管理员密码 | 必须使用长随机值 |
-| `SYSTEM_ADMIN_NAME` | 系统管理员显示名称 | `系统管理员` |
-| `SYSTEM_ADMIN_CONTACT` | 系统管理员联系方式/说明 | `系统维护` |
-| `SESSION_COOKIE_SECURE` | 是否强制会话 Cookie 只通过 HTTPS 发送 | 生产 `true`；本机 HTTP `false` 或留空 |
-| `SESSION_IDLE_TTL_DAYS` | 会话连续闲置多少天后失效 | `7`，允许 `1–30` |
-| `SESSION_ABSOLUTE_TTL_DAYS` | 一次登录无论续期最多持续多少天 | `30`，允许 `1–365`，且不能短于闲置期限 |
-| `SESSION_RENEW_BEFORE_HOURS` | 剩余多少小时以内才执行续期和令牌轮换 | `24`，必须短于闲置期限 |
-| `NEXT_ALLOWED_DEV_ORIGINS` | 开发模式允许加载 Next.js 资源的局域网主机/IP | 逗号分隔，不含端口 |
-| `SITE_ADDRESS` | Caddy 监听地址或生产域名 | 本机 `:80`；生产填写域名 |
-| `DATABASE_URL` | 可选的完整数据库连接字符串 | 云数据库常用 |
-| `DB_SSL` | 是否为数据库连接启用 TLS | `false` |
-| `DB_SSL_REJECT_UNAUTHORIZED` | 是否校验数据库 TLS 证书 | `true` |
+| 变量                         | 用途                                           | 默认/示例                              |
+| ---------------------------- | ---------------------------------------------- | -------------------------------------- |
+| `POSTGRES_DB`                | Compose 创建的数据库名                         | `drum_room`                            |
+| `POSTGRES_USER`              | Compose 创建的数据库用户                       | `drum_room`                            |
+| `POSTGRES_PASSWORD`          | 数据库密码                                     | 必须在部署前修改                       |
+| `POSTGRES_PORT`              | PostgreSQL 映射到开发机的端口                  | `5432`                                 |
+| `DB_POOL_MAX`                | 每个应用实例的最大数据库连接数                 | `10`                                   |
+| `SYSTEM_ADMIN_ACCOUNT`       | 唯一系统管理员登录账号                         | `system-admin`                         |
+| `SYSTEM_ADMIN_PASSWORD`      | 唯一系统管理员密码                             | 必须使用长随机值                       |
+| `SYSTEM_ADMIN_NAME`          | 系统管理员显示名称                             | `系统管理员`                           |
+| `SYSTEM_ADMIN_CONTACT`       | 系统管理员联系方式/说明                        | `系统维护`                             |
+| `SYSTEM_ADMIN_PHONE`         | 系统管理员对外显示的电话号码/说明              | 默认沿用 `SYSTEM_ADMIN_CONTACT`        |
+| `SYSTEM_ADMIN_WECHAT`        | 系统管理员对外显示的微信号/说明                | 默认沿用 `SYSTEM_ADMIN_CONTACT`        |
+| `INITIAL_SEMESTER_START`     | 首次创建预约设置时的学期开始日期               | `2026-09-07`                           |
+| `INITIAL_SEMESTER_END`       | 首次创建预约设置时的学期结束日期（必须是周日） | `2027-01-10`                           |
+| `SESSION_COOKIE_SECURE`      | 是否强制会话 Cookie 只通过 HTTPS 发送          | 生产 `true`；本机 HTTP `false` 或留空  |
+| `SESSION_IDLE_TTL_DAYS`      | 会话连续闲置多少天后失效                       | `7`，允许 `1–30`                       |
+| `SESSION_ABSOLUTE_TTL_DAYS`  | 一次登录无论续期最多持续多少天                 | `30`，允许 `1–365`，且不能短于闲置期限 |
+| `SESSION_RENEW_BEFORE_HOURS` | 剩余多少小时以内才执行续期和令牌轮换           | `24`，必须短于闲置期限                 |
+| `NEXT_ALLOWED_DEV_ORIGINS`   | 开发模式允许加载 Next.js 资源的局域网主机/IP   | 逗号分隔，不含端口                     |
+| `SITE_ADDRESS`               | Caddy 监听地址或生产域名                       | 本机 `:80`；生产填写域名               |
+| `DATABASE_URL`               | 可选的完整数据库连接字符串                     | 云数据库常用                           |
+| `DB_SSL`                     | 是否为数据库连接启用 TLS                       | `false`                                |
+| `DB_SSL_REJECT_UNAUTHORIZED` | 是否校验数据库 TLS 证书                        | `true`                                 |
 
 如果以后横向运行多个应用实例，应确保 `应用实例数 × DB_POOL_MAX` 小于 PostgreSQL 的最大连接数，并为管理连接和迁移任务预留余量。
 

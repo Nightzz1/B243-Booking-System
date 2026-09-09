@@ -6,11 +6,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-drum_room}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -26,11 +26,11 @@ services:
       PGDATABASE: ${POSTGRES_DB:-drum_room}
       PGUSER: ${POSTGRES_USER:-drum_room}
       PGPASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
-      DB_SSL: "false"
+      DB_SSL: 'false'
     depends_on:
       db:
         condition: service_healthy
-    restart: "no"
+    restart: 'no'
 
   app:
     build:
@@ -43,6 +43,10 @@ services:
       SYSTEM_ADMIN_PASSWORD: ${SYSTEM_ADMIN_PASSWORD:?请在 .env 中设置 SYSTEM_ADMIN_PASSWORD}
       SYSTEM_ADMIN_NAME: ${SYSTEM_ADMIN_NAME:-系统管理员}
       SYSTEM_ADMIN_CONTACT: ${SYSTEM_ADMIN_CONTACT:-系统维护}
+      SYSTEM_ADMIN_PHONE: ${SYSTEM_ADMIN_PHONE:-仅限系统维护}
+      SYSTEM_ADMIN_WECHAT: ${SYSTEM_ADMIN_WECHAT:-仅限系统维护}
+      INITIAL_SEMESTER_START: ${INITIAL_SEMESTER_START:-2026-09-07}
+      INITIAL_SEMESTER_END: ${INITIAL_SEMESTER_END:-2027-01-10}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
       SESSION_IDLE_TTL_DAYS: ${SESSION_IDLE_TTL_DAYS:-7}
       SESSION_ABSOLUTE_TTL_DAYS: ${SESSION_ABSOLUTE_TTL_DAYS:-30}
@@ -53,9 +57,9 @@ services:
     healthcheck:
       test:
         [
-          "CMD",
-          "node",
-          "-e",
+          'CMD',
+          'node',
+          '-e',
           "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 10s
@@ -68,9 +72,9 @@ services:
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

@@ -1,7 +1,14 @@
-import { canManageActivities, getAuthUser } from '@/lib/auth';
+import { canManageActivities, getAuthUser, type AuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
 import { json, mutationOriginError } from '@/lib/http';
-import { hasSlotStarted, isRealDate, SLOT_COUNT } from '@/lib/schedule';
+import {
+  getBookingPolicy,
+  hasSlotStarted,
+  isRealDate,
+  type BookingPolicy,
+  slotForDate,
+  SLOT_COUNT,
+} from '@/lib/schedule';
 
 export const runtime = 'nodejs';
 
@@ -30,6 +37,21 @@ export async function POST(request: Request) {
     return json({ error: '请选择 1–20 个活动时段。' }, 400);
   }
 
+  let user: AuthUser | null;
+  let policy: BookingPolicy;
+  try {
+    [user, policy] = await Promise.all([
+      getAuthUser(request),
+      getBookingPolicy(),
+    ]);
+  } catch (error) {
+    console.error('Failed to authorize activity request', error);
+    return json({ error: '活动权限检查失败，请稍后重试。' }, 500);
+  }
+  if (!user || !canManageActivities(user)) {
+    return json({ error: '没有登记社团活动的权限。' }, 403);
+  }
+
   const slots: RequestedSlot[] = [];
   const seen = new Set<string>();
   for (const item of body.slots) {
@@ -47,6 +69,16 @@ export async function POST(request: Request) {
       return json({ error: '活动时段格式不正确。' }, 400);
     }
     const slotIndex = value.slotIndex as number;
+    const scheduleSlot = slotForDate(value.date, slotIndex, policy);
+    if (!scheduleSlot) {
+      return json({ error: '所选节次不在当天的预约表中。' }, 400);
+    }
+    if (scheduleSlot.isPublic) {
+      return json(
+        { error: '学期中的第三节至第六节为公用时段，不能登记活动。' },
+        409,
+      );
+    }
     if (hasSlotStarted(value.date, slotIndex)) {
       return json({ error: '不能登记已经开始或过去的活动时段。' }, 400);
     }
@@ -57,11 +89,6 @@ export async function POST(request: Request) {
   }
 
   try {
-    const user = await getAuthUser(request);
-    if (!user || !canManageActivities(user)) {
-      return json({ error: '没有登记社团活动的权限。' }, 403);
-    }
-
     const placeholders = slots
       .map(
         (_, index) =>

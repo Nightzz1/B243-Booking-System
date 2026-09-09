@@ -15,6 +15,27 @@
       "when": 1788935106365,
       "tag": "0001_omniscient_mac_gargan",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788938833389,
+      "tag": "0002_silly_owl",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788942319629,
+      "tag": "0003_legal_echo",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788943924135,
+      "tag": "0004_smiling_nick_fury",
+      "breakpoints": true
     }
   ]
 }

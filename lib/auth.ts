@@ -15,7 +15,8 @@ export type AuthUser = {
   id: string;
   account: string;
   displayName: string;
-  contact: string;
+  phone: string;
+  wechat: string;
   role: UserRole;
   status: UserStatus;
 };
@@ -24,7 +25,8 @@ type UserRow = {
   id: string;
   account: string;
   display_name: string;
-  contact: string;
+  phone: string;
+  wechat: string;
   role: UserRole;
   status: UserStatus;
 };
@@ -104,6 +106,19 @@ export function isValidPassword(value: string) {
   );
 }
 
+export function isValidPhone(value: string) {
+  return (
+    value.length >= 6 &&
+    value.length <= 32 &&
+    /^[0-9+() -]+$/.test(value) &&
+    (value.match(/\d/g)?.length ?? 0) >= 6
+  );
+}
+
+export function isValidWechat(value: string) {
+  return value.length >= 1 && value.length <= 64;
+}
+
 function derivePassword(password: string, salt: Buffer) {
   return new Promise<Buffer>((resolve, reject) => {
     scrypt(
@@ -164,7 +179,8 @@ function toAuthUser(row: UserRow): AuthUser {
     id: row.id,
     account: row.account,
     displayName: row.display_name,
-    contact: row.contact,
+    phone: row.phone,
+    wechat: row.wechat,
     role: row.role,
     status: row.status,
   };
@@ -186,6 +202,10 @@ export async function ensureSystemAdmin() {
   const contact = (process.env.SYSTEM_ADMIN_CONTACT ?? '仅限系统维护')
     .trim()
     .slice(0, 100);
+  const phone = (process.env.SYSTEM_ADMIN_PHONE ?? contact).trim().slice(0, 32);
+  const wechat = (process.env.SYSTEM_ADMIN_WECHAT ?? contact)
+    .trim()
+    .slice(0, 64);
   const client = await getPool().connect();
 
   try {
@@ -211,10 +231,19 @@ export async function ensureSystemAdmin() {
       await client.query(
         `UPDATE users
          SET account = $1, password_hash = $2, display_name = $3, contact = $4,
+             phone = $5, wechat = $6,
              status = 'approved', approved_at = COALESCE(approved_at, now()),
              updated_at = now()
-         WHERE id = $5`,
-        [account, passwordHash, displayName, contact, existing.rows[0].id],
+         WHERE id = $7`,
+        [
+          account,
+          passwordHash,
+          displayName,
+          contact,
+          phone,
+          wechat,
+          existing.rows[0].id,
+        ],
       );
     } else {
       const conflicting = await client.query<{ id: string }>(
@@ -225,17 +254,35 @@ export async function ensureSystemAdmin() {
         await client.query(
           `UPDATE users
            SET password_hash = $1, display_name = $2, contact = $3,
+               phone = $4, wechat = $5,
                role = 'system_admin', status = 'approved', approved_at = now(),
                updated_at = now()
-           WHERE id = $4`,
-          [passwordHash, displayName, contact, conflicting.rows[0].id],
+           WHERE id = $6`,
+          [
+            passwordHash,
+            displayName,
+            contact,
+            phone,
+            wechat,
+            conflicting.rows[0].id,
+          ],
         );
       } else {
         await client.query(
           `INSERT INTO users
-             (id, account, password_hash, display_name, contact, role, status, approved_at)
-           VALUES ($1, $2, $3, $4, $5, 'system_admin', 'approved', now())`,
-          [crypto.randomUUID(), account, passwordHash, displayName, contact],
+             (id, account, password_hash, display_name, contact, phone, wechat,
+              role, status, approved_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7,
+                   'system_admin', 'approved', now())`,
+          [
+            crypto.randomUUID(),
+            account,
+            passwordHash,
+            displayName,
+            contact,
+            phone,
+            wechat,
+          ],
         );
       }
     }
@@ -255,7 +302,10 @@ export async function getAuthUser(request: Request) {
   const { absoluteDays } = getSessionConfig();
 
   const result = await getPool().query<UserRow>(
-    `SELECT u.id, u.account, u.display_name, u.contact, u.role, u.status
+    `SELECT u.id, u.account, u.display_name,
+            COALESCE(u.phone, u.contact) AS phone,
+            COALESCE(u.wechat, u.contact) AS wechat,
+            u.role, u.status
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = $1 AND s.expires_at > now()
@@ -303,7 +353,10 @@ export async function refreshAuthSession(
                   AND successor.id <> s.id
                   AND successor.expires_at > s.expires_at
               ) AS has_successor,
-              u.id, u.account, u.display_name, u.contact, u.role, u.status
+              u.id, u.account, u.display_name,
+              COALESCE(u.phone, u.contact) AS phone,
+              COALESCE(u.wechat, u.contact) AS wechat,
+              u.role, u.status
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = $1 AND s.expires_at > now()

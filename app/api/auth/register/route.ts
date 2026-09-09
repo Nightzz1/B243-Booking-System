@@ -2,6 +2,8 @@ import {
   hashPassword,
   isValidAccount,
   isValidPassword,
+  isValidPhone,
+  isValidWechat,
   normalizeAccount,
 } from '@/lib/auth';
 import { getPool } from '@/db';
@@ -17,7 +19,8 @@ export async function POST(request: Request) {
     account?: unknown;
     password?: unknown;
     displayName?: unknown;
-    contact?: unknown;
+    phone?: unknown;
+    wechat?: unknown;
   };
   try {
     body = (await request.json()) as typeof body;
@@ -30,7 +33,8 @@ export async function POST(request: Request) {
   const password = typeof body.password === 'string' ? body.password : '';
   const displayName =
     typeof body.displayName === 'string' ? body.displayName.trim() : '';
-  const contact = typeof body.contact === 'string' ? body.contact.trim() : '';
+  const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+  const wechat = typeof body.wechat === 'string' ? body.wechat.trim() : '';
 
   if (!isValidAccount(account)) {
     return json(
@@ -44,8 +48,11 @@ export async function POST(request: Request) {
   if (!displayName || displayName.length > 40) {
     return json({ error: '姓名需为 1–40 个字符。' }, 400);
   }
-  if (!contact || contact.length > 100) {
-    return json({ error: '联系方式需为 1–100 个字符。' }, 400);
+  if (!isValidPhone(phone)) {
+    return json({ error: '请输入有效的电话号码（至少包含 6 位数字）。' }, 400);
+  }
+  if (!isValidWechat(wechat)) {
+    return json({ error: '微信号需为 1–64 个字符。' }, 400);
   }
   if (
     process.env.SYSTEM_ADMIN_ACCOUNT &&
@@ -58,9 +65,18 @@ export async function POST(request: Request) {
     const passwordHash = await hashPassword(password);
     await getPool().query(
       `INSERT INTO users
-         (id, account, password_hash, display_name, contact, role, status)
-       VALUES ($1, $2, $3, $4, $5, 'member', 'pending')`,
-      [crypto.randomUUID(), account, passwordHash, displayName, contact],
+         (id, account, password_hash, display_name, contact, phone, wechat,
+          role, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'member', 'pending')`,
+      [
+        crypto.randomUUID(),
+        account,
+        passwordHash,
+        displayName,
+        `${phone} / ${wechat}`,
+        phone,
+        wechat,
+      ],
     );
     return json(
       { message: '注册申请已提交，请等待系统管理员或鼓房管理员审核。' },

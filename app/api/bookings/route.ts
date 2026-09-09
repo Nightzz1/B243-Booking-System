@@ -2,8 +2,14 @@ import { getAuthUser, type AuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
 import { json, mutationOriginError } from '@/lib/http';
 import {
+  addDateDays,
+  type BookingPolicy,
+  getBookingPolicy,
   hasSlotStarted,
+  isBookingOpen,
   isRealDate,
+  scheduleDay,
+  slotForDate,
   SLOT_COUNT,
   weekRange,
 } from '@/lib/schedule';
@@ -21,6 +27,8 @@ type BookingRow = {
   user_id: string | null;
   entry_type: EntryType;
   created_at: string;
+  phone?: string | null;
+  wechat?: string | null;
 };
 
 type RequestedSlot = {
@@ -36,6 +44,7 @@ function canCancelEntry(row: BookingRow, user: AuthUser) {
 }
 
 function toBooking(row: BookingRow, user: AuthUser) {
+  const isOwn = row.user_id === user.id;
   return {
     id: row.id,
     date: row.booking_date,
@@ -43,8 +52,12 @@ function toBooking(row: BookingRow, user: AuthUser) {
     memberName: row.member_name,
     entryType: row.entry_type,
     createdAt: row.created_at,
-    isOwn: row.user_id === user.id,
+    isOwn,
     canCancel: canCancelEntry(row, user),
+    contact:
+      row.entry_type === 'booking' && !isOwn && row.phone && row.wechat
+        ? { phone: row.phone, wechat: row.wechat }
+        : null,
   };
 }
 
@@ -52,22 +65,29 @@ async function findRequestedBookings(slots: RequestedSlot[], user: AuthUser) {
   const predicate = slots
     .map(
       (_, index) =>
-        `(booking_date = $${index * 2 + 1}::date AND slot_index = $${index * 2 + 2})`,
+        `(b.booking_date = $${index * 2 + 1}::date AND b.slot_index = $${index * 2 + 2})`,
     )
     .join(' OR ');
   const values = slots.flatMap((slot) => [slot.date, slot.slotIndex]);
   const result = await getPool().query<BookingRow>(
-    `SELECT id, booking_date::text AS booking_date, slot_index, member_name,
-            user_id, entry_type, created_at::text AS created_at
-     FROM bookings
+    `SELECT b.id, b.booking_date::text AS booking_date, b.slot_index,
+            b.member_name, b.user_id, b.entry_type,
+            b.created_at::text AS created_at,
+            COALESCE(u.phone, u.contact) AS phone,
+            COALESCE(u.wechat, u.contact) AS wechat
+     FROM bookings b
+     LEFT JOIN users u ON u.id = b.user_id
      WHERE ${predicate}
-     ORDER BY booking_date, slot_index`,
+     ORDER BY b.booking_date, b.slot_index`,
     values,
   );
   return result.rows.map((row) => toBooking(row, user));
 }
 
-function validateSlots(value: unknown): RequestedSlot[] | Response {
+function validateSlots(
+  value: unknown,
+  policy: BookingPolicy,
+): RequestedSlot[] | Response {
   if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
     return json({ error: '每次请选择 1–2 个预约时段。' }, 400);
   }
@@ -89,6 +109,24 @@ function validateSlots(value: unknown): RequestedSlot[] | Response {
       return json({ error: '预约时段格式不正确。' }, 400);
     }
     const slotIndex = candidate.slotIndex as number;
+    const scheduleSlot = slotForDate(candidate.date, slotIndex, policy);
+    if (!scheduleSlot) {
+      return json({ error: '所选节次不在当天的预约表中。' }, 400);
+    }
+    if (scheduleSlot.isPublic) {
+      return json(
+        { error: '学期中的第三节至第六节为公用时段，不开放预约。' },
+        409,
+      );
+    }
+    if (!isBookingOpen(candidate.date)) {
+      return json(
+        {
+          error: `该日期尚未开放预约，将于 ${scheduleDay(candidate.date, policy).bookingOpenDate} 13:00 开放。`,
+        },
+        409,
+      );
+    }
     if (hasSlotStarted(candidate.date, slotIndex)) {
       return json({ error: '不能预约已经开始或过去的时段。' }, 400);
     }
@@ -118,14 +156,19 @@ export async function GET(request: Request) {
       return json({ error: '一次最多查询 32 天的预约。' }, 400);
     }
 
+    const policy = await getBookingPolicy();
     const quotaWeek = weekRange(from);
     const [bookingResult, countResult] = await Promise.all([
       getPool().query<BookingRow>(
-        `SELECT id, booking_date::text AS booking_date, slot_index, member_name,
-                user_id, entry_type, created_at::text AS created_at
-         FROM bookings
-         WHERE booking_date >= $1::date AND booking_date <= $2::date
-         ORDER BY booking_date, slot_index`,
+        `SELECT b.id, b.booking_date::text AS booking_date, b.slot_index,
+                b.member_name, b.user_id, b.entry_type,
+                b.created_at::text AS created_at,
+                COALESCE(u.phone, u.contact) AS phone,
+                COALESCE(u.wechat, u.contact) AS wechat
+         FROM bookings b
+         LEFT JOIN users u ON u.id = b.user_id
+         WHERE b.booking_date >= $1::date AND b.booking_date <= $2::date
+         ORDER BY b.booking_date, b.slot_index`,
         [from, to],
       ),
       getPool().query<{ count: string }>(
@@ -141,6 +184,10 @@ export async function GET(request: Request) {
       bookings: bookingResult.rows.map((row) => toBooking(row, user)),
       weeklyBookedCount: Number(countResult.rows[0]?.count ?? 0),
       weeklyBookingLimit: 2,
+      settings: policy,
+      scheduleDays: Array.from({ length: rangeDays + 1 }, (_, index) =>
+        scheduleDay(addDateDays(from, index), policy),
+      ),
     });
   } catch (error) {
     console.error('Failed to load bookings', error);
@@ -159,18 +206,21 @@ export async function POST(request: Request) {
     return json({ error: '请求内容格式不正确。' }, 400);
   }
 
-  const slots = validateSlots(body.slots);
-  if (slots instanceof Response) return slots;
-
   let user: AuthUser | null;
+  let policy: BookingPolicy;
   try {
-    user = await getAuthUser(request);
+    [user, policy] = await Promise.all([
+      getAuthUser(request),
+      getBookingPolicy(),
+    ]);
   } catch (error) {
     console.error('Failed to authenticate booking request', error);
     return json({ error: '登录状态检查失败，请稍后重试。' }, 500);
   }
   if (!user) return json({ error: '请先登录后预约。' }, 401);
 
+  const slots = validateSlots(body.slots, policy);
+  if (slots instanceof Response) return slots;
   const slotsByWeek = new Map<
     string,
     { from: string; to: string; count: number }
