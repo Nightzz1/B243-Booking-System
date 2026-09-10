@@ -1,4 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import type { PoolClient } from 'pg';
 
 import { getPool } from '@/db';
 
@@ -295,13 +296,16 @@ export async function ensureSystemAdmin() {
   }
 }
 
-export async function getAuthUser(request: Request) {
+export async function getAuthUser(
+  request: Request,
+  connection: Pick<PoolClient, 'query'> = getPool(),
+) {
   const token = parseCookies(request).get(SESSION_COOKIE_NAME);
   if (!token) return null;
 
   const { absoluteDays } = getSessionConfig();
 
-  const result = await getPool().query<UserRow>(
+  const result = await connection.query<UserRow>(
     `SELECT u.id, u.account, u.display_name,
             COALESCE(u.phone, u.contact) AS phone,
             COALESCE(u.wechat, u.contact) AS wechat,
@@ -317,19 +321,40 @@ export async function getAuthUser(request: Request) {
   return result.rows[0] ? toAuthUser(result.rows[0]) : null;
 }
 
-export async function createSession(userId: string) {
+export async function createSession(
+  userId: string,
+  expectedPasswordHash: string,
+) {
   const { idleDays, absoluteDays } = getSessionConfig();
   const createdAt = new Date();
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(createdAt.getTime() + idleDays * DAY_MS);
   const cookieExpiresAt = new Date(createdAt.getTime() + absoluteDays * DAY_MS);
-  await getPool().query('DELETE FROM sessions WHERE expires_at <= now()');
-  await getPool().query(
-    `INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [crypto.randomUUID(), userId, tokenHash(token), expiresAt, createdAt],
-  );
-  return { token, cookieExpiresAt };
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const user = await client.query(
+      "SELECT id FROM users WHERE id = $1 AND password_hash = $2 AND status = 'approved' FOR UPDATE",
+      [userId, expectedPasswordHash],
+    );
+    if (!user.rows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    await client.query('DELETE FROM sessions WHERE expires_at <= now()');
+    await client.query(
+      `INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [crypto.randomUUID(), userId, tokenHash(token), expiresAt, createdAt],
+    );
+    await client.query('COMMIT');
+    return { token, cookieExpiresAt };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function refreshAuthSession(
@@ -342,6 +367,12 @@ export async function refreshAuthSession(
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    // Keep the lock order user -> session consistent with password changes.
+    await client.query(
+      `SELECT u.id FROM users u JOIN sessions s ON s.user_id = u.id
+       WHERE s.token_hash = $1 FOR UPDATE OF u`,
+      [tokenHash(token)],
+    );
     const result = await client.query<SessionRow>(
       `SELECT s.id AS session_id, s.user_id,
               s.expires_at::text AS expires_at,

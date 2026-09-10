@@ -77,7 +77,9 @@ export async function POST(request: Request) {
       return json({ error: '注册申请未通过，请联系管理员。' }, 403);
     }
 
-    const session = await createSession(user.id);
+    const session = await createSession(user.id, user.password_hash);
+    if (!session)
+      return json({ error: '账号状态或密码已变更，请重新登录。' }, 401);
     return Response.json(
       { user: publicUser(user) },
       {

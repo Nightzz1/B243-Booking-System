@@ -23,6 +23,7 @@ import {
   Trash2,
   UserPlus,
   Users,
+  Settings,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -37,6 +38,9 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { LessonManagement } from '@/components/lesson-management';
+import { AccountSettings } from '@/components/account-settings';
+import { AdminPasswordReset } from '@/components/password-reset';
+import { MyBookings } from '@/components/my-bookings';
 import {
   maxVisibleWeekOffsetForRole,
   minVisibleWeekOffsetForRole,
@@ -440,6 +444,9 @@ function AuthScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
 export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [resetTarget, setResetTarget] = useState<ManagedUser | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [myBookingsRevision, setMyBookingsRevision] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
   const [activeDay, setActiveDay] = useState(
     () => (clubToday().getUTCDay() + 6) % 7,
@@ -467,6 +474,19 @@ export default function Home() {
   const [noticeIsError, setNoticeIsError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+
+  const clearLocalSession = useCallback(() => {
+    setUser(null);
+    setResetTarget(null);
+    setAccountOpen(false);
+    setAdminOpen(false);
+    setWeekOffset(0);
+    setBookings({});
+    setScheduleDays({});
+    setSelected(new Set());
+    setCancelEntry(null);
+    setContactEntry(null);
+  }, []);
 
   const days = useMemo(() => {
     const monday = addDays(startOfWeek(clubToday()), weekOffset * 7);
@@ -506,7 +526,9 @@ export default function Home() {
     void fetch('/api/auth/me', { cache: 'no-store' })
       .then((response) => readJson<{ user?: AuthUser | null }>(response))
       .then((data) => {
-        if (active) setUser(data.user ?? null);
+        if (active) {
+          setUser(data.user ?? null);
+        }
       })
       .catch(() => {
         if (active) setUser(null);
@@ -526,7 +548,9 @@ export default function Home() {
       try {
         const response = await fetch('/api/auth/me', { cache: 'no-store' });
         if (!response.ok) return;
-        const data = await readJson<{ user?: AuthUser | null }>(response);
+        const data = await readJson<{
+          user?: AuthUser | null;
+        }>(response);
         if (!active) return;
         if (!data.user) setUser(null);
         else setUser(data.user);
@@ -579,6 +603,7 @@ export default function Home() {
           ),
         );
         setWeeklyBookedCount(data.weeklyBookedCount ?? 0);
+        setMyBookingsRevision((value) => value + 1);
         if (data.settings) setBookingSettings(data.settings);
         if (data.scheduleDays) {
           setScheduleDays(
@@ -808,11 +833,7 @@ export default function Home() {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } finally {
-      setUser(null);
-      setWeekOffset(0);
-      setBookings({});
-      setScheduleDays({});
-      setSelected(new Set());
+      clearLocalSession();
     }
   }
 
@@ -1013,6 +1034,13 @@ export default function Home() {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              className="border-white/15 bg-white/5 text-white hover:bg-white/10"
+              onClick={() => setAccountOpen(true)}
+              variant="outline"
+            >
+              <Settings /> 账号管理
+            </Button>
             {canManage && (
               <Button
                 className="border-white/15 bg-white/5 text-white hover:bg-white/10"
@@ -1042,6 +1070,12 @@ export default function Home() {
       </header>
 
       <section className="mx-auto max-w-[1500px] px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
+        <MyBookings
+          key={user.id}
+          revision={myBookingsRevision}
+          onChanged={refreshBookings}
+          onSessionExpired={clearLocalSession}
+        />
         <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="mb-1 flex items-center gap-2 text-sm font-medium text-muted-foreground">
@@ -1053,7 +1087,7 @@ export default function Home() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge className="h-9 rounded-xl px-3" variant="secondary">
-              本周已预约 {weeklyBookedCount}/2
+              所选周已预约 {weeklyBookedCount}/2
             </Badge>
             <Badge className="h-9 rounded-xl px-3" variant="outline">
               {weekScheduleLabel}
@@ -1123,7 +1157,7 @@ export default function Home() {
           />
           <p>
             {entryMode === 'booking'
-              ? `每周日 13:00 开放下一周周一至周四，每周四 13:00 开放本周周五至周日。每人每周最多预约 2 段，你本周还可预约 ${bookingRemaining} 段；学期内周一至周五的第三至第六节为公用时段。活动只能在“管理活动”中修改。`
+              ? `每周日 13:00 开放下一周周一至周四，每周四 13:00 开放本周周五至周日。每人每周最多预约 2 段，所选周还可预约 ${bookingRemaining} 段；学期内周一至周五的第三至第六节为公用时段。活动只能在“管理活动”中修改。`
               : '请选择尚未开始的空白时段登记社团活动；管理员可向后查看并安排未来 16 周。活动可以提前登记，但学期内周一至周五的第三至第六节是公用时段，不能占用。周末第三至第六节可以正常登记。'}
           </p>
         </div>
@@ -1380,6 +1414,14 @@ export default function Home() {
         </p>
       </section>
 
+      {accountOpen && (
+        <AccountSettings
+          user={user}
+          onClose={() => setAccountOpen(false)}
+          onUpdate={setUser}
+          onPasswordChanged={clearLocalSession}
+        />
+      )}
       <Dialog onOpenChange={setConfirmOpen} open={confirmOpen}>
         <DialogContent className="max-w-md rounded-2xl p-5">
           <DialogHeader>
@@ -1528,7 +1570,13 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      <Dialog onOpenChange={setAdminOpen} open={adminOpen}>
+      <Dialog
+        onOpenChange={(open) => {
+          setAdminOpen(open);
+          if (!open) setResetTarget(null);
+        }}
+        open={adminOpen}
+      >
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto rounded-2xl p-5 sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-xl font-extrabold">
@@ -1649,6 +1697,17 @@ export default function Home() {
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
+                      {user.role === 'system_admin' &&
+                        item.status === 'approved' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={adminLoading}
+                            onClick={() => setResetTarget(item)}
+                          >
+                            重置密码
+                          </Button>
+                        )}
                       {item.status !== 'approved' && mayReview && (
                         <Button
                           disabled={adminLoading}
@@ -1731,6 +1790,12 @@ export default function Home() {
           >
             {adminNotice}
           </p>
+          {resetTarget && adminOpen && (
+            <AdminPasswordReset
+              target={resetTarget}
+              onClose={() => setResetTarget(null)}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </main>
