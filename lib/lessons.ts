@@ -138,7 +138,10 @@ function requestedSlots(dates: string[], firstSlotIndex: number) {
 function equalIdSets(left: string[], right: string[]) {
   if (left.length !== right.length) return false;
   const expected = new Set(left);
-  return right.every((id) => expected.has(id));
+  return (
+    new Set(right).size === expected.size &&
+    right.every((id) => expected.has(id))
+  );
 }
 
 function toConflict(row: EntryRow): LessonConflict {
@@ -470,7 +473,7 @@ function rethrowDatabaseConflict(error: unknown): never {
     error && typeof error === 'object' && 'code' in error
       ? String(error.code)
       : '';
-  if (code === '23505') {
+  if (code === '23505' || code === '23P01' || code === '40P01') {
     throw new LessonServiceError(
       '课程保存期间时段状态发生了变化，请刷新后重试。',
       409,

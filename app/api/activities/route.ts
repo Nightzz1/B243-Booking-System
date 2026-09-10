@@ -94,6 +94,9 @@ export async function POST(request: Request) {
     slots.push({ date: value.date, slotIndex });
   }
 
+  slots.sort(
+    (a, b) => a.date.localeCompare(b.date) || a.slotIndex - b.slotIndex,
+  );
   try {
     const placeholders = slots
       .map(
@@ -121,7 +124,7 @@ export async function POST(request: Request) {
       error && typeof error === 'object' && 'code' in error
         ? String(error.code)
         : '';
-    if (code === '23505') {
+    if (code === '23505' || code === '23P01' || code === '40P01') {
       return json(
         { error: '部分时段已被预约、活动或固定鼓课占用，请重新选择。' },
         409,

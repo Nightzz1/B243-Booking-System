@@ -333,6 +333,8 @@ try {
   );
   const { testAuthRateLimits } = await import('./test-auth-rate-limits.mjs');
   await testAuthRateLimits(pool, auth, hash);
+  const { testSharedPractice } = await import('./test-shared-practice.mjs');
+  await testSharedPractice(pool, auth, hash);
 } finally {
   if (pool) await pool.end();
   if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);

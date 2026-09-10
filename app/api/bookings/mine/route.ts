@@ -1,3 +1,4 @@
+import type { PracticeMode } from '@/lib/practice';
 import { getPool } from '@/db';
 import { getAuthUser } from '@/lib/auth';
 import { json } from '@/lib/http';
@@ -23,8 +24,9 @@ export async function GET(request: Request) {
       id: string;
       date: string;
       slot_index: number;
+      practice_mode: PracticeMode;
     }>(
-      `SELECT id, booking_date::text AS date, slot_index FROM bookings
+      `SELECT id, booking_date::text AS date, slot_index, practice_mode FROM bookings
        WHERE user_id = $1 AND entry_type = 'booking'
          AND booking_date BETWEEN $2::date AND $3::date
        ORDER BY booking_date, slot_index`,
@@ -42,6 +44,7 @@ export async function GET(request: Request) {
               id: row.id,
               date: row.date,
               slotIndex: row.slot_index,
+              practiceMode: row.practice_mode,
               period: slot?.period ?? `第 ${row.slot_index + 1} 节`,
               time: slot?.time ?? '时段已调整，请联系管理员',
               canCancel: !hasSlotStarted(row.date, row.slot_index),

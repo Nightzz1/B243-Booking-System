@@ -267,6 +267,9 @@ export const bookings = pgTable(
       onDelete: 'set null',
     }),
     entryType: scheduleEntryType('entry_type').default('booking').notNull(),
+    practiceMode: varchar('practice_mode', { length: 8 })
+      .default('solo')
+      .notNull(),
     lessonId: uuid('lesson_id').references(() => drumLessons.id, {
       onDelete: 'set null',
     }),
@@ -278,9 +281,20 @@ export const bookings = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('idx_bookings_date_slot_unique').on(
-      table.bookingDate,
-      table.slotIndex,
+    // SQL migration also installs the GiST exclusion constraint that prevents shared/solo mixing.
+    uniqueIndex('idx_bookings_solo_date_slot_unique')
+      .on(table.bookingDate, table.slotIndex)
+      .where(sql`${table.practiceMode} = 'solo'`),
+    uniqueIndex('idx_bookings_personal_user_slot_unique')
+      .on(table.bookingDate, table.slotIndex, table.userId)
+      .where(sql`${table.entryType} = 'booking'`),
+    check(
+      'bookings_practice_mode_valid',
+      sql`${table.practiceMode} IN ('shared', 'solo')`,
+    ),
+    check(
+      'bookings_nonpersonal_solo',
+      sql`${table.entryType} = 'booking' OR ${table.practiceMode} = 'solo'`,
     ),
     index('idx_bookings_user_date').on(table.userId, table.bookingDate),
     index('idx_bookings_lesson_date').on(table.lessonId, table.bookingDate),

@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -40,6 +41,9 @@ import { Input } from '@/components/ui/input';
 import { LessonManagement } from '@/components/lesson-management';
 import { AccountSettings } from '@/components/account-settings';
 import { AdminPasswordReset } from '@/components/password-reset';
+import { SharedPracticeDialog } from '@/components/shared-practice-dialog';
+import { PRACTICE_LABELS, type PracticeMode } from '@/lib/practice';
+import type { Booking } from '@/lib/booking-types';
 import { MyBookings } from '@/components/my-bookings';
 import {
   maxVisibleWeekOffsetForRole,
@@ -68,7 +72,6 @@ const SESSION_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 type UserRole = 'system_admin' | 'club_admin' | 'member';
 type UserStatus = 'pending' | 'approved' | 'rejected';
 type EntryMode = 'booking' | 'activity';
-type ScheduleEntryType = EntryMode | 'lesson';
 type ScheduleMode = 'semester' | 'vacation';
 
 type BookingSettings = {
@@ -106,25 +109,16 @@ type AuthUser = {
   status: UserStatus;
 };
 
-type Booking = {
-  id: string;
-  date: string;
-  slotIndex: number;
-  memberName: string;
-  entryType: ScheduleEntryType;
-  lessonId: string | null;
-  createdAt: string;
-  isOwn: boolean;
-  canCancel: boolean;
-  contact: { phone: string; wechat: string } | null;
-};
-
 type ManagedUser = AuthUser & {
   createdAt: string;
   approvedAt: string | null;
 };
 
-type SlotRequest = { date: string; slotIndex: number };
+type SlotRequest = {
+  date: string;
+  slotIndex: number;
+  practiceMode?: PracticeMode;
+};
 
 const ROLE_LABELS: Record<UserRole, string> = {
   system_admin: '系统管理员',
@@ -448,11 +442,16 @@ export default function Home() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [myBookingsRevision, setMyBookingsRevision] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
+  const [requestedWeekOffset, setRequestedWeekOffset] = useState(0);
   const [activeDay, setActiveDay] = useState(
     () => (clubToday().getUTCDay() + 6) % 7,
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bookings, setBookings] = useState<Record<string, Booking>>({});
+  const [bookings, setBookings] = useState<Record<string, Booking[]>>({});
+  const [practiceModes, setPracticeModes] = useState<
+    Record<string, PracticeMode>
+  >({});
+  const [sharedSlotKey, setSharedSlotKey] = useState<string | null>(null);
   const [scheduleDays, setScheduleDays] = useState<Record<string, ScheduleDay>>(
     {},
   );
@@ -473,6 +472,8 @@ export default function Home() {
   const [notice, setNotice] = useState('');
   const [noticeIsError, setNoticeIsError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const scheduleRequest = useRef(0);
+  const displayedWeekOffset = useRef(0);
   const [submitting, setSubmitting] = useState(false);
 
   const clearLocalSession = useCallback(() => {
@@ -480,12 +481,17 @@ export default function Home() {
     setResetTarget(null);
     setAccountOpen(false);
     setAdminOpen(false);
+    scheduleRequest.current += 1;
+    displayedWeekOffset.current = 0;
     setWeekOffset(0);
+    setRequestedWeekOffset(0);
     setBookings({});
     setScheduleDays({});
     setSelected(new Set());
+    setPracticeModes({});
     setCancelEntry(null);
     setContactEntry(null);
+    setSharedSlotKey(null);
   }, []);
 
   const days = useMemo(() => {
@@ -510,10 +516,10 @@ export default function Home() {
     const mode = scheduleDays[dateKey(days[0])]?.mode;
     return mode === 'vacation' ? '假期时段表' : '学期时段表';
   }, [days, scheduleDays]);
-  const atEarliestWeek = weekOffset <= minVisibleWeekOffset;
-  const atLatestWeek = weekOffset >= maxVisibleWeekOffset;
+  const atEarliestWeek = requestedWeekOffset <= minVisibleWeekOffset;
+  const atLatestWeek = requestedWeekOffset >= maxVisibleWeekOffset;
 
-  function slotDescription(entry: Booking) {
+  function slotDescription(entry: Pick<Booking, 'date' | 'slotIndex'>) {
     const slot = scheduleDays[entry.date]?.slots.find(
       (item) => item.slotIndex === entry.slotIndex,
     );
@@ -574,8 +580,10 @@ export default function Home() {
   const refreshBookings = useCallback(
     async (signal?: AbortSignal) => {
       if (!user) return;
-      const from = dateKey(days[0]);
-      const to = dateKey(days[6]);
+      const requestId = ++scheduleRequest.current;
+      const monday = addDays(startOfWeek(clubToday()), requestedWeekOffset * 7);
+      const from = dateKey(monday);
+      const to = dateKey(addDays(monday, 6));
       try {
         const response = await fetch(`/api/bookings?from=${from}&to=${to}`, {
           cache: 'no-store',
@@ -588,20 +596,21 @@ export default function Home() {
           scheduleDays?: ScheduleDay[];
           error?: string;
         }>(response);
+        if (signal?.aborted || requestId !== scheduleRequest.current) return;
         if (response.status === 401) {
           setUser(null);
           throw new Error('登录已失效，请重新登录。');
         }
-        if (!response.ok || !data.bookings)
+        if (!response.ok || !data.bookings || data.scheduleDays?.length !== 7)
           throw new Error(data.error ?? '预约表加载失败。');
-        setBookings(
-          Object.fromEntries(
-            data.bookings.map((booking) => [
-              `${booking.date}|${booking.slotIndex}`,
-              booking,
-            ]),
-          ),
-        );
+        const grouped: Record<string, Booking[]> = {};
+        for (const booking of data.bookings)
+          (grouped[`${booking.date}|${booking.slotIndex}`] ??= []).push(
+            booking,
+          );
+        displayedWeekOffset.current = requestedWeekOffset;
+        setWeekOffset(requestedWeekOffset);
+        setBookings(grouped);
         setWeeklyBookedCount(data.weeklyBookedCount ?? 0);
         setMyBookingsRevision((value) => value + 1);
         if (data.settings) setBookingSettings(data.settings);
@@ -613,6 +622,7 @@ export default function Home() {
           );
         }
       } catch (error) {
+        if (signal?.aborted || requestId !== scheduleRequest.current) return;
         if (error instanceof DOMException && error.name === 'AbortError')
           return;
         setNotice(
@@ -621,11 +631,13 @@ export default function Home() {
             : '预约表加载失败，请稍后重试。',
         );
         setNoticeIsError(true);
+        setRequestedWeekOffset(displayedWeekOffset.current);
       } finally {
-        setLoading(false);
+        if (!signal?.aborted && requestId === scheduleRequest.current)
+          setLoading(false);
       }
     },
-    [days, user],
+    [requestedWeekOffset, user],
   );
 
   useEffect(() => {
@@ -649,8 +661,12 @@ export default function Home() {
 
   function toggleSlot(dayIndex: number, slotIndex: number) {
     const key = bookingKey(dayIndex, slotIndex);
-    const booking = bookings[key];
-    if (booking) {
+    const entries = bookings[key] ?? [];
+    const booking = entries[0];
+    if (booking?.entryType === 'booking' && booking.practiceMode === 'shared') {
+      setSharedSlotKey(key);
+      return;
+    } else if (booking) {
       if (booking.entryType === 'lesson') return;
       if (booking.entryType === 'activity') {
         if (entryMode === 'activity' && booking.canCancel) {
@@ -693,6 +709,7 @@ export default function Home() {
 
     setNotice('');
     setNoticeIsError(false);
+    setPracticeModes((current) => ({ ...current, [key]: 'shared' }));
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(key)) {
@@ -719,21 +736,26 @@ export default function Home() {
       return;
     }
     setSelected(new Set());
+    setPracticeModes({});
     setNotice('');
     setNoticeIsError(false);
-    if (offset === weekOffset) return;
+    if (offset === requestedWeekOffset) {
+      if (noticeIsError) void refreshBookings();
+      return;
+    }
+    scheduleRequest.current += 1;
     setLoading(true);
-    setWeekOffset(offset);
-    setScheduleDays({});
+    setRequestedWeekOffset(offset);
   }
 
   function moveWeek(direction: number) {
-    showWeek(weekOffset + direction);
+    showWeek(requestedWeekOffset + direction);
   }
 
   function changeEntryMode(mode: EntryMode) {
     setEntryMode(mode);
     setSelected(new Set());
+    setPracticeModes({});
     setCancelEntry(null);
     setContactEntry(null);
     setNotice('');
@@ -754,12 +776,52 @@ export default function Home() {
     return data.bookings;
   }, []);
 
+  async function joinSharedPractice() {
+    if (!sharedEntry || !canJoinShared || submitting) return;
+    const entry = sharedEntry;
+    const key = `${entry.date}|${entry.slotIndex}`;
+    setSubmitting(true);
+    setNotice('');
+    setNoticeIsError(false);
+    try {
+      await submitPersonalBooking([
+        {
+          date: entry.date,
+          slotIndex: entry.slotIndex,
+          practiceMode: 'shared',
+        },
+      ]);
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+      setNotice('已成功加入共同练习。');
+      await refreshBookings();
+    } catch (error) {
+      setNotice(
+        error instanceof Error ? error.message : '加入失败，请稍后重试。',
+      );
+      setNoticeIsError(true);
+      await refreshBookings();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function confirmSelection() {
     if (!user || selected.size === 0 || submitting) return;
     if (entryMode === 'activity' && !activityTitle.trim()) return;
     const slots = Array.from(selected).map((key) => {
       const [date, slotIndex] = key.split('|');
-      return { date, slotIndex: Number(slotIndex) };
+      return {
+        date,
+        slotIndex: Number(slotIndex),
+        practiceMode:
+          bookings[key]?.[0]?.practiceMode === 'shared'
+            ? 'shared'
+            : (practiceModes[key] ?? 'shared'),
+      };
     });
 
     setSubmitting(true);
@@ -779,11 +841,12 @@ export default function Home() {
       }
       const count = slots.length;
       setSelected(new Set());
+      setPracticeModes({});
       setConfirmOpen(false);
       setActivityTitle('');
       setNotice(
         entryMode === 'booking'
-          ? `预约成功：已锁定 ${count} 个时段。`
+          ? `预约成功：已预约 ${count} 个时段。`
           : `活动登记成功：已占用 ${count} 个时段。`,
       );
       await refreshBookings();
@@ -945,7 +1008,8 @@ export default function Home() {
         {
           name: 'create_drum_room_booking',
           title: '预约鼓房',
-          description: '使用当前登录账号预约一到两个鼓房时段。',
+          description:
+            '使用当前登录账号预约一到两个鼓房时段。默认共同练习，可选择独自练习。',
           inputSchema: {
             type: 'object',
             properties: {
@@ -956,6 +1020,11 @@ export default function Home() {
                 items: {
                   type: 'object',
                   properties: {
+                    practiceMode: {
+                      type: 'string',
+                      enum: ['shared', 'solo'],
+                      default: 'shared',
+                    },
                     date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
                     slotIndex: {
                       type: 'integer',
@@ -994,6 +1063,28 @@ export default function Home() {
     return () => lifecycle.abort();
   }, [refreshBookings, submitPersonalBooking, user]);
 
+  const sharedEntries = sharedSlotKey
+    ? (bookings[sharedSlotKey] ?? []).filter(
+        (entry) => entry.practiceMode === 'shared',
+      )
+    : [];
+  const sharedEntry = sharedEntries[0];
+  const sharedOwn = sharedEntries.some((entry) => entry.isOwn);
+  const sharedSelectable =
+    sharedEntry &&
+    scheduleDays[sharedEntry.date]?.slots.find(
+      (slot) => slot.slotIndex === sharedEntry.slotIndex,
+    )?.selectableForBooking;
+  const canJoinShared = Boolean(
+    sharedEntry &&
+    !sharedOwn &&
+    sharedSelectable &&
+    entryMode === 'booking' &&
+    !loading &&
+    !submitting &&
+    (selected.has(sharedSlotKey!) || selected.size < bookingRemaining),
+  );
+
   if (authLoading) {
     return (
       <main className="grid min-h-screen place-items-center bg-[#111416] text-white">
@@ -1009,7 +1100,10 @@ export default function Home() {
       <AuthScreen
         onLogin={(nextUser) => {
           setLoading(true);
+          scheduleRequest.current += 1;
+          displayedWeekOffset.current = 0;
           setWeekOffset(0);
+          setRequestedWeekOffset(0);
           setUser(nextUser);
         }}
       />
@@ -1191,6 +1285,18 @@ export default function Home() {
           })}
         </div>
 
+        <div
+          className="mb-3 flex flex-wrap gap-3 text-xs"
+          aria-label="预约类型图例"
+        >
+          <span className="rounded-md bg-emerald-100 px-2 py-1 text-emerald-900">
+            共同练习 · 可多人加入
+          </span>
+          <span className="rounded-md bg-rose-100 px-2 py-1 text-rose-900">
+            独自练习 · 独占时段
+          </span>
+        </div>
+
         <div className="schedule-shell overflow-hidden rounded-[20px] border border-border bg-card shadow-[0_18px_60px_rgb(17_20_22/7%)]">
           <div className="hidden grid-cols-[108px_repeat(7,minmax(105px,1fr))] border-b border-border bg-muted/55 md:grid">
             <div className="flex items-center gap-2 border-r border-border px-4 py-4 text-sm font-semibold text-muted-foreground">
@@ -1222,156 +1328,188 @@ export default function Home() {
             })}
           </div>
 
-          {displaySlots.map(({ slotIndex, period, time }) => (
-            <div
-              className="grid grid-cols-[96px_1fr] border-b border-border last:border-b-0 md:grid-cols-[108px_repeat(7,minmax(105px,1fr))]"
-              key={slotIndex}
-            >
-              <div className="flex min-h-16 flex-col justify-center border-r border-border bg-muted/30 px-3 text-muted-foreground md:px-4">
-                <span className="text-sm font-bold text-foreground/80">
-                  {period}
-                </span>
-                <span className="mt-0.5 text-xs font-semibold tabular-nums">
-                  {time}
-                </span>
+          {!days.every((day) => scheduleDays[dateKey(day)]) ? (
+            <div className="min-h-[704px] p-4">
+              <div aria-hidden="true" className="mt-4 space-y-3">
+                {Array.from({ length: 11 }, (_, index) => (
+                  <div key={index} className="h-12 rounded-lg bg-muted/45" />
+                ))}
               </div>
-              {days.map((day, dayIndex) => {
-                const date = dateKey(day);
-                const key = bookingKey(dayIndex, slotIndex);
-                const booking = bookings[key];
-                const isSelected = selected.has(key);
-                const isVisible = dayIndex === activeDay;
-                const daySchedule = scheduleDays[date];
-                const scheduleSlot = daySchedule?.slots.find(
-                  (slot) => slot.slotIndex === slotIndex,
-                );
-                const selectable = Boolean(
-                  entryMode === 'booking'
-                    ? scheduleSlot?.selectableForBooking
-                    : scheduleSlot?.selectableForActivity,
-                );
-                const unavailableLabel = !scheduleSlot
-                  ? '假期无此节次'
-                  : scheduleSlot.isPublic
-                    ? '公用时段'
-                    : entryMode === 'booking' && !daySchedule?.bookingOpen
-                      ? '未开放'
-                      : '';
-                const bookingIsInteractive = Boolean(
-                  booking &&
-                  (booking.entryType === 'booking'
-                    ? !booking.isOwn || booking.canCancel
-                    : booking.entryType === 'activity' &&
-                      entryMode === 'activity' &&
-                      booking.canCancel),
-                );
-                const showDirectDelete = Boolean(
-                  booking &&
-                  booking.canCancel &&
-                  (booking.entryType === 'activity'
-                    ? entryMode === 'activity'
-                    : booking.isOwn),
-                );
-                return (
-                  <button
-                    aria-label={
-                      booking
-                        ? `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${booking.entryType === 'activity' ? '活动' : booking.entryType === 'lesson' ? '鼓课' : '预约'}：${booking.memberName}${booking.entryType === 'booking' && !booking.isOwn ? '，点击查看联系方式' : showDirectDelete ? '，点击可取消' : scheduleSlot?.hasStarted ? '，已结束且不可修改' : ''}`
-                        : `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${unavailableLabel || (isSelected ? '已选择' : scheduleSlot?.hasStarted ? '无人预约，已结束且不可修改' : '可选择')}`
-                    }
-                    aria-pressed={isSelected}
-                    className={cn(
-                      'group relative min-h-16 border-r border-border px-2 text-left transition last:border-r-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block',
-                      !isVisible && 'hidden',
-                      !booking &&
-                        selectable &&
-                        'hover:bg-primary/8 active:bg-primary/15',
-                      !booking && !selectable && 'cursor-not-allowed',
-                      !booking &&
-                        !selectable &&
-                        !scheduleSlot?.hasStarted &&
-                        'bg-muted/45',
-                      !booking &&
-                        scheduleSlot?.isPublic &&
-                        'bg-sky-50/80 text-sky-900',
-                      booking?.entryType === 'booking' &&
-                        'bg-foreground/[0.035]',
-                      booking?.entryType === 'activity' && 'bg-amber-100/65',
-                      booking?.entryType === 'lesson' && 'bg-violet-100/75',
-                      booking?.entryType === 'booking' &&
-                        !booking.isOwn &&
-                        'cursor-pointer hover:bg-primary/8',
-                      showDirectDelete &&
-                        'cursor-pointer hover:bg-destructive/8',
-                      scheduleSlot?.hasStarted &&
-                        !scheduleSlot.isPublic &&
-                        'bg-muted/80 text-muted-foreground hover:bg-muted/80',
-                      isSelected && 'bg-primary/18 hover:bg-primary/22',
-                    )}
-                    disabled={
-                      loading ||
-                      (!booking && !selectable) ||
-                      Boolean(booking && !bookingIsInteractive)
-                    }
-                    key={dateKey(day)}
-                    onClick={() => toggleSlot(dayIndex, slotIndex)}
-                    type="button"
-                  >
-                    {booking ? (
-                      <span
-                        className={cn(
-                          'mx-auto flex w-fit max-w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-bold',
-                          booking.entryType === 'activity'
-                            ? 'bg-amber-500/18 text-amber-950'
-                            : booking.entryType === 'lesson'
-                              ? 'bg-violet-500/18 text-violet-950'
-                              : booking.isOwn
-                                ? 'bg-primary/30 text-foreground'
-                                : 'bg-foreground/8 text-foreground/75',
-                        )}
-                      >
-                        {booking.entryType === 'activity' ? (
-                          <CalendarPlus
-                            aria-hidden="true"
-                            className="size-3.5"
-                          />
-                        ) : booking.entryType === 'lesson' ? (
-                          <Drum aria-hidden="true" className="size-3.5" />
-                        ) : (
-                          <Users aria-hidden="true" className="size-3.5" />
-                        )}
-                        <span className="truncate">
-                          {booking.entryType === 'lesson'
-                            ? `鼓课：${booking.memberName}`
-                            : booking.memberName}
-                        </span>
-                        {showDirectDelete && (
-                          <Trash2
-                            aria-hidden="true"
-                            className="size-3 text-destructive"
-                          />
-                        )}
-                      </span>
-                    ) : isSelected ? (
-                      <span className="mx-auto flex w-fit items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1.5 text-sm font-bold text-primary-foreground shadow-sm">
-                        <Check aria-hidden="true" className="size-3.5" /> 已选择
-                      </span>
-                    ) : unavailableLabel ? (
-                      <span className="mx-auto block w-fit text-xs font-medium text-muted-foreground/60">
-                        {unavailableLabel}
-                      </span>
-                    ) : (
-                      <span className="sr-only">
-                        {scheduleSlot?.hasStarted
-                          ? '无人预约，已结束且不可修改'
-                          : '选择这个时段'}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
             </div>
-          ))}
+          ) : (
+            displaySlots.map(({ slotIndex, period, time }) => (
+              <div
+                className="grid grid-cols-[96px_1fr] border-b border-border last:border-b-0 md:grid-cols-[108px_repeat(7,minmax(105px,1fr))]"
+                key={slotIndex}
+              >
+                <div className="flex min-h-16 flex-col justify-center border-r border-border bg-muted/30 px-3 text-muted-foreground md:px-4">
+                  <span className="text-sm font-bold text-foreground/80">
+                    {period}
+                  </span>
+                  <span className="mt-0.5 text-xs font-semibold tabular-nums">
+                    {time}
+                  </span>
+                </div>
+                {days.map((day, dayIndex) => {
+                  const date = dateKey(day);
+                  const key = bookingKey(dayIndex, slotIndex);
+                  const entries = bookings[key] ?? [];
+                  const booking = entries[0];
+                  const isShared =
+                    booking?.entryType === 'booking' &&
+                    booking.practiceMode === 'shared';
+                  const hasOwn = entries.some((entry) => entry.isOwn);
+                  const isSelected = selected.has(key);
+                  const isVisible = dayIndex === activeDay;
+                  const daySchedule = scheduleDays[date];
+                  const scheduleSlot = daySchedule?.slots.find(
+                    (slot) => slot.slotIndex === slotIndex,
+                  );
+                  const selectable = Boolean(
+                    entryMode === 'booking'
+                      ? scheduleSlot?.selectableForBooking
+                      : scheduleSlot?.selectableForActivity,
+                  );
+                  const unavailableLabel = !scheduleSlot
+                    ? '假期无此节次'
+                    : scheduleSlot.isPublic
+                      ? '公用时段'
+                      : entryMode === 'booking' && !daySchedule?.bookingOpen
+                        ? '未开放'
+                        : '';
+                  const bookingIsInteractive = Boolean(
+                    booking &&
+                    (booking.entryType === 'booking'
+                      ? isShared || !booking.isOwn || booking.canCancel
+                      : booking.entryType === 'activity' &&
+                        entryMode === 'activity' &&
+                        booking.canCancel),
+                  );
+                  const showDirectDelete = Boolean(
+                    booking &&
+                    !isShared &&
+                    booking.canCancel &&
+                    (booking.entryType === 'activity'
+                      ? entryMode === 'activity'
+                      : booking.isOwn),
+                  );
+                  return (
+                    <button
+                      aria-label={
+                        booking
+                          ? `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${booking.entryType === 'activity' ? '活动' : booking.entryType === 'lesson' ? '鼓课' : PRACTICE_LABELS[booking.practiceMode]}：${isShared ? `${entries.length} 人，点击查看参与者或加入` : booking.memberName}${booking.entryType === 'booking' && !booking.isOwn ? '，点击查看联系方式' : showDirectDelete ? '，点击可取消' : scheduleSlot?.hasStarted ? '，已结束且不可修改' : ''}`
+                          : `${WEEKDAYS[dayIndex]} ${scheduleSlot?.period ?? period} ${scheduleSlot?.time ?? time}，${unavailableLabel || (isSelected ? '已选择' : scheduleSlot?.hasStarted ? '无人预约，已结束且不可修改' : '可选择')}`
+                      }
+                      aria-pressed={isSelected}
+                      className={cn(
+                        'group relative min-h-16 border-r border-border px-2 text-left transition last:border-r-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block',
+                        !isVisible && 'hidden',
+                        !booking &&
+                          selectable &&
+                          'hover:bg-primary/8 active:bg-primary/15',
+                        !booking && !selectable && 'cursor-not-allowed',
+                        !booking &&
+                          !selectable &&
+                          !scheduleSlot?.hasStarted &&
+                          'bg-muted/45',
+                        !booking &&
+                          scheduleSlot?.isPublic &&
+                          'bg-sky-50/80 text-sky-900',
+                        booking?.entryType === 'booking' &&
+                          (isShared ? 'bg-emerald-50/80' : 'bg-rose-50/70'),
+                        booking?.entryType === 'activity' && 'bg-amber-100/65',
+                        booking?.entryType === 'lesson' && 'bg-violet-100/75',
+                        booking?.entryType === 'booking' &&
+                          !booking.isOwn &&
+                          'cursor-pointer hover:bg-primary/8',
+                        showDirectDelete &&
+                          'cursor-pointer hover:bg-destructive/8',
+                        scheduleSlot?.hasStarted &&
+                          !scheduleSlot.isPublic &&
+                          'bg-muted/80 text-muted-foreground hover:bg-muted/80',
+                        isSelected && 'bg-primary/18 hover:bg-primary/22',
+                      )}
+                      disabled={
+                        loading ||
+                        (!booking && !selectable) ||
+                        Boolean(booking && !bookingIsInteractive)
+                      }
+                      key={dateKey(day)}
+                      onClick={() => toggleSlot(dayIndex, slotIndex)}
+                      type="button"
+                    >
+                      {booking ? (
+                        <span className="flex flex-col items-center gap-1 py-2">
+                          {booking.entryType === 'booking' && (
+                            <span
+                              className={cn(
+                                'text-[11px] font-bold',
+                                isShared ? 'text-emerald-800' : 'text-rose-800',
+                              )}
+                            >
+                              {PRACTICE_LABELS[booking.practiceMode]}
+                              {isShared && isSelected ? ' · 已选择' : ''}
+                            </span>
+                          )}
+                          <span
+                            className={cn(
+                              'mx-auto flex w-fit max-w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-bold',
+                              booking.entryType === 'activity'
+                                ? 'bg-amber-500/18 text-amber-950'
+                                : booking.entryType === 'lesson'
+                                  ? 'bg-violet-500/18 text-violet-950'
+                                  : booking.isOwn
+                                    ? 'bg-primary/30 text-foreground'
+                                    : 'bg-foreground/8 text-foreground/75',
+                            )}
+                          >
+                            {booking.entryType === 'activity' ? (
+                              <CalendarPlus
+                                aria-hidden="true"
+                                className="size-3.5"
+                              />
+                            ) : booking.entryType === 'lesson' ? (
+                              <Drum aria-hidden="true" className="size-3.5" />
+                            ) : (
+                              <Users aria-hidden="true" className="size-3.5" />
+                            )}
+                            <span className="truncate">
+                              {booking.entryType === 'lesson'
+                                ? `鼓课：${booking.memberName}`
+                                : isShared
+                                  ? `${entries.length} 人${hasOwn ? ' · 已加入' : ''}`
+                                  : booking.memberName}
+                            </span>
+                            {showDirectDelete && (
+                              <Trash2
+                                aria-hidden="true"
+                                className="size-3 text-destructive"
+                              />
+                            )}
+                          </span>
+                        </span>
+                      ) : isSelected ? (
+                        <span className="mx-auto flex w-fit items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1.5 text-sm font-bold text-primary-foreground shadow-sm">
+                          <Check aria-hidden="true" className="size-3.5" />{' '}
+                          已选择
+                        </span>
+                      ) : unavailableLabel ? (
+                        <span className="mx-auto block w-fit text-xs font-medium text-muted-foreground/60">
+                          {unavailableLabel}
+                        </span>
+                      ) : (
+                        <span className="sr-only">
+                          {scheduleSlot?.hasStarted
+                            ? '无人预约，已结束且不可修改'
+                            : '选择这个时段'}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))
+          )}
         </div>
 
         <div className="mt-5 flex flex-col gap-3 rounded-2xl bg-[#111416] p-4 text-white shadow-xl sm:flex-row sm:items-center sm:justify-between sm:px-5">
@@ -1390,11 +1528,7 @@ export default function Home() {
             disabled={selected.size === 0 || loading}
             onClick={() => setConfirmOpen(true)}
           >
-            {loading
-              ? '正在同步…'
-              : entryMode === 'booking'
-                ? '确认预约'
-                : '登记活动'}
+            {entryMode === 'booking' ? '确认预约' : '登记活动'}
             {selected.size > 0 && (
               <span className="rounded-md bg-black/15 px-1.5 py-0.5 text-xs">
                 {selected.size}
@@ -1414,6 +1548,37 @@ export default function Home() {
         </p>
       </section>
 
+      {sharedSlotKey && (
+        <SharedPracticeDialog
+          entries={sharedEntries}
+          description={
+            sharedEntry
+              ? `${sharedEntry.date} ${slotDescription(sharedEntry)}`
+              : '时段状态已更新'
+          }
+          canJoin={canJoinShared}
+          submitting={submitting}
+          error={noticeIsError ? notice : undefined}
+          joinHint={
+            sharedOwn
+              ? '你已经加入该共同练习，可以单独退出。'
+              : entryMode !== 'booking'
+                ? '切换到个人预约后可以加入。'
+                : !sharedSelectable
+                  ? '该时段当前不可加入。'
+                  : selected.size >= bookingRemaining &&
+                      !selected.has(sharedSlotKey)
+                    ? '所选周的可预约次数已用完或已选满。'
+                    : '点击“确认加入”即完成预约，并占用一次个人周配额。'
+          }
+          onJoin={() => void joinSharedPractice()}
+          onCancel={(entry) => {
+            setCancelEntry(entry);
+            setSharedSlotKey(null);
+          }}
+          onClose={() => setSharedSlotKey(null)}
+        />
+      )}
       {accountOpen && (
         <AccountSettings
           user={user}
@@ -1434,6 +1599,57 @@ export default function Home() {
                 : `所选 ${selected.size} 个时段会被活动占用，并在后续开放预约时保留。`}
             </DialogDescription>
           </DialogHeader>
+          {entryMode === 'booking' && (
+            <div className="space-y-3">
+              {Array.from(selected).map((key) => {
+                const [date, index] = key.split('|');
+                const shared = bookings[key]?.[0]?.practiceMode === 'shared';
+                const chosen = shared
+                  ? 'shared'
+                  : (practiceModes[key] ?? 'shared');
+                return (
+                  <fieldset
+                    key={key}
+                    className="rounded-xl border p-3"
+                    disabled={submitting}
+                  >
+                    <legend className="px-1 text-sm font-semibold">
+                      {date} ·{' '}
+                      {slotDescription({ date, slotIndex: Number(index) })}
+                    </legend>
+                    <div className="mt-1 flex flex-wrap gap-4 text-sm">
+                      {(['shared', 'solo'] as const).map((mode) => (
+                        <label key={mode} className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name={`practice-${key}`}
+                            value={mode}
+                            checked={chosen === mode}
+                            disabled={shared && mode === 'solo'}
+                            onChange={() =>
+                              setPracticeModes((current) => ({
+                                ...current,
+                                [key]: mode,
+                              }))
+                            }
+                          />
+                          {PRACTICE_LABELS[mode]}
+                          {mode === 'shared' ? '（默认）' : ''}
+                        </label>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {shared
+                        ? '加入已有共同练习，其他参与者的预约不受影响。'
+                        : chosen === 'shared'
+                          ? '允许其他社员继续预约这一时段，一起练习。'
+                          : '此时段仅供你使用，其他社员不能预约。'}
+                    </p>
+                  </fieldset>
+                );
+              })}
+            </div>
+          )}
           {entryMode === 'activity' && (
             <label
               className="grid gap-2 text-sm font-semibold"
@@ -1549,6 +1765,8 @@ export default function Home() {
               确定要取消 {cancelEntry?.date}{' '}
               {cancelEntry ? slotDescription(cancelEntry) : ''} 的“
               {cancelEntry?.memberName}”吗？
+              {cancelEntry?.practiceMode === 'shared' &&
+                '这只取消此人的参与，其他人的预约不受影响。'}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

@@ -1,5 +1,6 @@
 'use client';
 
+import { PRACTICE_LABELS, type PracticeMode } from '@/lib/practice';
 import { useCallback, useEffect, useState } from 'react';
 import { CalendarDays, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -19,6 +20,7 @@ type OwnBooking = {
   period: string;
   time: string;
   canCancel: boolean;
+  practiceMode: PracticeMode;
 };
 type OwnWeek = {
   label: string;
@@ -201,7 +203,8 @@ export function MyBookings({
                               {booking.date} · {booking.period}
                             </p>
                             <p className="text-muted-foreground">
-                              {booking.time}
+                              {booking.time} ·{' '}
+                              {PRACTICE_LABELS[booking.practiceMode]}
                             </p>
                           </div>
                           {booking.canCancel ? (
@@ -241,8 +244,11 @@ export function MyBookings({
           <DialogHeader>
             <DialogTitle>取消这次预约？</DialogTitle>
             <DialogDescription>
-              {cancel?.date} {cancel?.period} {cancel?.time}
-              。取消后时段将重新开放，该周会恢复一次可预约次数。
+              {cancel?.date} {cancel?.period} {cancel?.time}。
+              {cancel?.practiceMode === 'shared'
+                ? '只退出你自己的共同练习，其他人的预约不受影响。'
+                : '取消后时段将重新开放。'}
+              该周会恢复一次可预约次数。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

@@ -1,3 +1,5 @@
+import type { PoolClient } from 'pg';
+import type { PracticeMode } from '@/lib/practice';
 import { getAuthUser, type AuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
 import { json, mutationOriginError } from '@/lib/http';
@@ -28,6 +30,7 @@ type BookingRow = {
   member_name: string;
   user_id: string | null;
   entry_type: EntryType;
+  practice_mode: PracticeMode;
   lesson_id: string | null;
   created_at: string;
   phone?: string | null;
@@ -37,6 +40,7 @@ type BookingRow = {
 type RequestedSlot = {
   date: string;
   slotIndex: number;
+  practiceMode: PracticeMode;
 };
 
 function canCancelEntry(row: BookingRow, user: AuthUser) {
@@ -55,6 +59,7 @@ function toBooking(row: BookingRow, user: AuthUser) {
     slotIndex: row.slot_index,
     memberName: row.member_name,
     entryType: row.entry_type,
+    practiceMode: row.practice_mode,
     lessonId: row.lesson_id,
     createdAt: row.created_at,
     isOwn,
@@ -66,7 +71,11 @@ function toBooking(row: BookingRow, user: AuthUser) {
   };
 }
 
-async function findRequestedBookings(slots: RequestedSlot[], user: AuthUser) {
+async function findRequestedBookings(
+  slots: RequestedSlot[],
+  user: AuthUser,
+  connection: Pick<PoolClient, 'query'>,
+) {
   const predicate = slots
     .map(
       (_, index) =>
@@ -74,9 +83,9 @@ async function findRequestedBookings(slots: RequestedSlot[], user: AuthUser) {
     )
     .join(' OR ');
   const values = slots.flatMap((slot) => [slot.date, slot.slotIndex]);
-  const result = await getPool().query<BookingRow>(
+  const result = await connection.query<BookingRow>(
     `SELECT b.id, b.booking_date::text AS booking_date, b.slot_index,
-            b.member_name, b.user_id, b.entry_type, b.lesson_id,
+            b.member_name, b.user_id, b.entry_type, b.practice_mode, b.lesson_id,
             b.created_at::text AS created_at,
             COALESCE(u.phone, u.contact) AS phone,
             COALESCE(u.wechat, u.contact) AS wechat
@@ -104,7 +113,14 @@ function validateSlots(
     if (!item || typeof item !== 'object') {
       return json({ error: '预约时段格式不正确。' }, 400);
     }
-    const candidate = item as { date?: unknown; slotIndex?: unknown };
+    const candidate = item as {
+      date?: unknown;
+      slotIndex?: unknown;
+      practiceMode?: unknown;
+    };
+    const practiceMode = candidate.practiceMode ?? 'shared';
+    if (practiceMode !== 'shared' && practiceMode !== 'solo')
+      return json({ error: '请选择共同练习或独自练习。' }, 400);
     if (
       typeof candidate.date !== 'string' ||
       !isRealDate(candidate.date) ||
@@ -144,9 +160,11 @@ function validateSlots(
     const key = `${candidate.date}|${slotIndex}`;
     if (seen.has(key)) return json({ error: '预约时段不能重复。' }, 400);
     seen.add(key);
-    slots.push({ date: candidate.date, slotIndex });
+    slots.push({ date: candidate.date, slotIndex, practiceMode });
   }
-  return slots;
+  return slots.sort(
+    (a, b) => a.date.localeCompare(b.date) || a.slotIndex - b.slotIndex,
+  );
 }
 
 export async function GET(request: Request) {
@@ -176,7 +194,7 @@ export async function GET(request: Request) {
     const [bookingResult, countResult] = await Promise.all([
       getPool().query<BookingRow>(
         `SELECT b.id, b.booking_date::text AS booking_date, b.slot_index,
-                b.member_name, b.user_id, b.entry_type, b.lesson_id,
+                b.member_name, b.user_id, b.entry_type, b.practice_mode, b.lesson_id,
                 b.created_at::text AS created_at,
                 COALESCE(u.phone, u.contact) AS phone,
                 COALESCE(u.wechat, u.contact) AS wechat
@@ -216,7 +234,10 @@ export async function POST(request: Request) {
 
   let body: { slots?: unknown };
   try {
-    body = (await request.json()) as typeof body;
+    const value: unknown = await request.json();
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return json({ error: '请求内容格式不正确。' }, 400);
+    body = value as typeof body;
   } catch {
     return json({ error: '请求内容格式不正确。' }, 400);
   }
@@ -283,7 +304,7 @@ export async function POST(request: Request) {
     const placeholders = slots
       .map(
         (_, index) =>
-          `($${index * 5 + 1}::uuid, $${index * 5 + 2}::date, $${index * 5 + 3}, $${index * 5 + 4}, $${index * 5 + 5}::uuid, 'booking')`,
+          `($${index * 6 + 1}::uuid, $${index * 6 + 2}::date, $${index * 6 + 3}, $${index * 6 + 4}, $${index * 6 + 5}::uuid, 'booking', $${index * 6 + 6})`,
       )
       .join(', ');
     const values = slots.flatMap((slot) => [
@@ -292,13 +313,14 @@ export async function POST(request: Request) {
       slot.slotIndex,
       user.displayName,
       user.id,
+      slot.practiceMode,
     ]);
     const result = await client.query<BookingRow>(
       `INSERT INTO bookings
-         (id, booking_date, slot_index, member_name, user_id, entry_type)
+         (id, booking_date, slot_index, member_name, user_id, entry_type, practice_mode)
        VALUES ${placeholders}
        RETURNING id, booking_date::text AS booking_date, slot_index, member_name,
-                 user_id, entry_type, lesson_id,
+                 user_id, entry_type, practice_mode, lesson_id,
                  created_at::text AS created_at`,
       values,
     );
@@ -317,11 +339,12 @@ export async function POST(request: Request) {
       error && typeof error === 'object' && 'code' in error
         ? String(error.code)
         : '';
-    if (code === '23505') {
-      const conflicts = await findRequestedBookings(slots, user);
+    if (code === '23505' || code === '23P01' || code === '40P01') {
+      const conflicts = await findRequestedBookings(slots, user, client);
       return json(
         {
-          error: '部分时段刚刚被预约、活动或固定鼓课占用，请重新选择。',
+          error:
+            '部分时段已被独自练习、活动或鼓课占用，或你已预约该时段。共同练习不能改为独自练习，请刷新后重新选择。',
           conflicts,
         },
         409,
