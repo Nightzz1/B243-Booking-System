@@ -18,6 +18,27 @@ export const userRole = pgEnum('user_role', [
   'member',
 ]);
 
+export const authRateLimits = pgTable(
+  'auth_rate_limits',
+  {
+    key: varchar('key', { length: 64 }).primaryKey(),
+    generation: uuid('generation').notNull(),
+    hits: integer('hits').default(0).notNull(),
+    expiresAt: timestamp('expires_at', {
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    blockedUntil: timestamp('blocked_until', {
+      withTimezone: true,
+      mode: 'string',
+    }),
+  },
+  (table) => [
+    index('idx_auth_rate_limits_expires').on(table.expiresAt),
+    check('auth_rate_limits_hits_nonnegative', sql`${table.hits} >= 0`),
+  ],
+);
+
 export const userStatus = pgEnum('user_status', [
   'pending',
   'approved',

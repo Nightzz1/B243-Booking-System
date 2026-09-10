@@ -187,7 +187,21 @@ function toAuthUser(row: UserRow): AuthUser {
   };
 }
 
-export async function ensureSystemAdmin() {
+const globalForAdmin = globalThis as typeof globalThis & {
+  bookingAdminInitialization?: Promise<void>;
+};
+
+export function ensureSystemAdmin() {
+  globalForAdmin.bookingAdminInitialization ??= synchronizeSystemAdmin().catch(
+    (error) => {
+      globalForAdmin.bookingAdminInitialization = undefined;
+      throw error;
+    },
+  );
+  return globalForAdmin.bookingAdminInitialization;
+}
+
+async function synchronizeSystemAdmin() {
   const rawAccount = process.env.SYSTEM_ADMIN_ACCOUNT ?? '';
   const password = process.env.SYSTEM_ADMIN_PASSWORD ?? '';
   if (!rawAccount && !password) return;

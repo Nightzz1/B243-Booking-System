@@ -7,7 +7,8 @@ import {
   normalizeAccount,
 } from '@/lib/auth';
 import { getPool } from '@/db';
-import { json, mutationOriginError } from '@/lib/http';
+import { limitAuthIp } from '@/lib/auth-rate-limit';
+import { json, mutationOriginError, readAuthJson } from '@/lib/http';
 
 export const runtime = 'nodejs';
 
@@ -15,18 +16,15 @@ export async function POST(request: Request) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
 
-  let body: {
-    account?: unknown;
-    password?: unknown;
-    displayName?: unknown;
-    phone?: unknown;
-    wechat?: unknown;
-  };
   try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
+    const limited = await limitAuthIp(request, 'register');
+    if (limited) return limited;
+  } catch (error) {
+    console.error('Registration rate limiter unavailable', error);
+    return json({ error: '注册服务暂时不可用，请稍后重试。' }, 503);
   }
+  const body = await readAuthJson(request);
+  if (body instanceof Response) return body;
 
   const account =
     typeof body.account === 'string' ? normalizeAccount(body.account) : '';

@@ -331,6 +331,8 @@ try {
   console.log(
     'PASS admin-only reset, session revocation, reusable new password and voluntary password change',
   );
+  const { testAuthRateLimits } = await import('./test-auth-rate-limits.mjs');
+  await testAuthRateLimits(pool, auth, hash);
 } finally {
   if (pool) await pool.end();
   if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
