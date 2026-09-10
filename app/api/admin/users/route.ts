@@ -131,13 +131,13 @@ export async function PATCH(request: Request) {
       if (body.role !== 'member' && body.role !== 'club_admin') {
         return json({ error: '账号身份不正确。' }, 400);
       }
-      await getPool().query(
-        `UPDATE users
-         SET role = $1, status = 'approved', approved_by = $2,
-             approved_at = COALESCE(approved_at, now()), updated_at = now()
-         WHERE id = $3`,
-        [body.role, actor.id, userId],
+      const changed = await getPool().query(
+        `UPDATE users SET role = $1, updated_at = now()
+         WHERE id = $2 AND status = 'approved' RETURNING id`,
+        [body.role, userId],
       );
+      if (!changed.rowCount)
+        return json({ error: '只能设置已审核通过账号的身份。' }, 409);
     } else {
       return json({ error: '不支持的管理操作。' }, 400);
     }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ArrowLeft,
   BookOpen,
   CalendarOff,
   Check,
@@ -114,6 +115,7 @@ export function LessonManagement({
   const [lessons, setLessons] = useState<DrumLesson[]>([]);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
+  const [formOpen, setFormOpen] = useState(false);
   const [className, setClassName] = useState('');
   const [startWeek, setStartWeek] = useState(settings?.semesterStart ?? '');
   const [weekday, setWeekday] = useState(1);
@@ -209,6 +211,7 @@ export function LessonManagement({
       setPendingMutation(null);
       setConflicts([]);
       resetForm();
+      setFormOpen(false);
       await onScheduleChange();
       return true;
     } catch (error) {
@@ -238,6 +241,7 @@ export function LessonManagement({
   }
 
   function beginEdit(lesson: DrumLesson) {
+    setFormOpen(true);
     setEditingId(lesson.id);
     setClassName(lesson.className);
     setStartWeek(lesson.startWeek);
@@ -275,253 +279,281 @@ export function LessonManagement({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="flex items-center gap-2 font-bold">
-            <BookOpen className="size-4" /> 固定鼓课
+            <BookOpen className="size-4" />
+            {formOpen ? (editingId ? '修改鼓课' : '新建鼓课') : '固定鼓课'}
           </p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             每门课从开始周起，每周固定占用同一天连续两个节次，默认持续到本学期结束。
           </p>
         </div>
-        <Badge variant="outline">{lessons.length} 门课程</Badge>
-      </div>
-
-      <div className="mt-4 grid gap-3 rounded-xl border bg-card p-3 sm:grid-cols-2">
-        <label
-          className="grid min-w-0 gap-1.5 text-sm font-semibold"
-          htmlFor="lesson-class-name"
-        >
-          班型名称
-          <Input
-            disabled={loading}
-            id="lesson-class-name"
-            maxLength={80}
-            onChange={(event) => setClassName(event.target.value)}
-            placeholder="例如：爵士鼓入门班"
-            value={className}
-          />
-        </label>
-        <label
-          className="grid min-w-0 gap-1.5 text-sm font-semibold"
-          htmlFor="lesson-start-week"
-        >
-          开始周（请选择周一）
-          <Input
-            disabled={loading}
-            id="lesson-start-week"
-            max={settings?.semesterEnd}
-            min={settings?.semesterStart}
-            onChange={(event) => setStartWeek(event.target.value)}
-            type="date"
-            value={effectiveStartWeek}
-          />
-        </label>
-        <label className="grid min-w-0 gap-1.5 text-sm font-semibold">
-          每周上课日
-          <select
-            className="h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
-            disabled={loading}
-            onChange={(event) => changeWeekday(Number(event.target.value))}
-            value={weekday}
-          >
-            {WEEKDAYS.map((label, index) => (
-              <option key={label} value={index + 1}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="grid min-w-0 gap-1.5 text-sm font-semibold">
-          连续两个节次
-          <select
-            className="h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
-            disabled={loading}
-            onChange={(event) => setFirstSlotIndex(Number(event.target.value))}
-            value={firstSlotIndex}
-          >
-            {availableSlots.map((slotIndex) => (
-              <option key={slotIndex} value={slotIndex}>
-                {slotPairLabel(slotIndex)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="flex flex-wrap gap-2 sm:col-span-2">
+        {formOpen ? (
           <Button
-            disabled={loading || !className.trim() || !effectiveStartWeek}
-            onClick={submitLesson}
             size="sm"
+            variant="outline"
+            disabled={loading}
+            onClick={() => {
+              resetForm();
+              setFormOpen(false);
+              setNotice('');
+            }}
           >
-            {editingId ? <Check /> : <Plus />}
-            {editingId ? '保存课程修改' : '登记固定鼓课'}
+            <ArrowLeft /> 返回课程列表
           </Button>
-          {editingId && (
+        ) : (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">{lessons.length} 门课程</Badge>
             <Button
-              disabled={loading}
-              onClick={resetForm}
               size="sm"
-              variant="outline"
+              disabled={loading}
+              onClick={() => {
+                resetForm();
+                setNotice('');
+                setFormOpen(true);
+              }}
             >
-              取消修改
+              <Plus /> 新建鼓课
             </Button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      <div className="mt-4 grid gap-3">
-        {loading && lessons.length === 0 && (
-          <p className="py-5 text-center text-sm text-muted-foreground">
-            正在加载固定鼓课…
-          </p>
-        )}
-        {!loading && lessons.length === 0 && (
-          <p className="py-5 text-center text-sm text-muted-foreground">
-            本学期还没有登记固定鼓课。
-          </p>
-        )}
-        {lessons.map((lesson) => {
-          const paused = lesson.occurrences.filter((item) => item.paused);
-          const pauseCandidates = lesson.occurrences.filter(
-            (item) => !item.paused && !item.started,
-          );
-          const selectedPause =
-            pauseDates[lesson.id] ?? pauseCandidates[0]?.date ?? '';
-          return (
-            <article className="rounded-xl border bg-card p-3" key={lesson.id}>
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-bold">{lesson.className}</p>
-                    <Badge
-                      variant={
-                        lesson.lastOccurrenceDate ? 'secondary' : 'default'
-                      }
-                    >
-                      {lesson.lastOccurrenceDate ? '已结课' : '进行中'}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {WEEKDAYS[lesson.weekday - 1]} ·{' '}
-                    {slotPairLabel(lesson.firstSlotIndex)}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {lesson.startWeek} 开始
-                    {lesson.lastOccurrenceDate
-                      ? `，最后一次课：${lesson.lastOccurrenceDate}`
-                      : '，默认持续至学期结束'}
-                  </p>
-                </div>
-                {!lesson.lastOccurrenceDate && (
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      disabled={loading}
-                      onClick={() => beginEdit(lesson)}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Pencil /> 修改
-                    </Button>
-                    {lesson.canDelete ? (
-                      <Button
-                        disabled={loading}
-                        onClick={() =>
-                          void executeMutation({
-                            url: `/api/admin/lessons/${lesson.id}`,
-                            method: 'DELETE',
-                            successMessage: '未开始的固定鼓课已删除。',
-                          })
+      {formOpen ? (
+        <div className="mt-4 grid gap-3 rounded-xl border bg-card p-3 sm:grid-cols-2">
+          <label
+            className="grid min-w-0 gap-1.5 text-sm font-semibold"
+            htmlFor="lesson-class-name"
+          >
+            班型名称
+            <Input
+              disabled={loading}
+              id="lesson-class-name"
+              maxLength={80}
+              onChange={(event) => setClassName(event.target.value)}
+              placeholder="例如：爵士鼓入门班"
+              value={className}
+            />
+          </label>
+          <label
+            className="grid min-w-0 gap-1.5 text-sm font-semibold"
+            htmlFor="lesson-start-week"
+          >
+            开始周（请选择周一）
+            <Input
+              disabled={loading}
+              id="lesson-start-week"
+              max={settings?.semesterEnd}
+              min={settings?.semesterStart}
+              onChange={(event) => setStartWeek(event.target.value)}
+              type="date"
+              value={effectiveStartWeek}
+            />
+          </label>
+          <label className="grid min-w-0 gap-1.5 text-sm font-semibold">
+            每周上课日
+            <select
+              className="h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
+              disabled={loading}
+              onChange={(event) => changeWeekday(Number(event.target.value))}
+              value={weekday}
+            >
+              {WEEKDAYS.map((label, index) => (
+                <option key={label} value={index + 1}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grid min-w-0 gap-1.5 text-sm font-semibold">
+            连续两个节次
+            <select
+              className="h-9 w-full min-w-0 rounded-md border bg-background px-3 text-sm"
+              disabled={loading}
+              onChange={(event) =>
+                setFirstSlotIndex(Number(event.target.value))
+              }
+              value={firstSlotIndex}
+            >
+              {availableSlots.map((slotIndex) => (
+                <option key={slotIndex} value={slotIndex}>
+                  {slotPairLabel(slotIndex)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex flex-wrap gap-2 sm:col-span-2">
+            <Button
+              disabled={loading || !className.trim() || !effectiveStartWeek}
+              onClick={submitLesson}
+              size="sm"
+            >
+              {editingId ? <Check /> : <Plus />}
+              {editingId ? '保存课程修改' : '登记固定鼓课'}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-3">
+          {loading && lessons.length === 0 && (
+            <p className="py-5 text-center text-sm text-muted-foreground">
+              正在加载固定鼓课…
+            </p>
+          )}
+          {!loading && lessons.length === 0 && (
+            <p className="py-5 text-center text-sm text-muted-foreground">
+              本学期还没有登记固定鼓课。
+            </p>
+          )}
+          {lessons.map((lesson) => {
+            const paused = lesson.occurrences.filter((item) => item.paused);
+            const pauseCandidates = lesson.occurrences.filter(
+              (item) => !item.paused && !item.started,
+            );
+            const selectedPause =
+              pauseDates[lesson.id] ?? pauseCandidates[0]?.date ?? '';
+            return (
+              <article
+                className="rounded-xl border bg-card p-3"
+                key={lesson.id}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-bold">{lesson.className}</p>
+                      <Badge
+                        variant={
+                          lesson.lastOccurrenceDate ? 'secondary' : 'default'
                         }
-                        size="sm"
-                        variant="destructive"
                       >
-                        <Trash2 /> 删除
-                      </Button>
-                    ) : (
+                        {lesson.lastOccurrenceDate ? '已结课' : '进行中'}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {WEEKDAYS[lesson.weekday - 1]} ·{' '}
+                      {slotPairLabel(lesson.firstSlotIndex)}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {lesson.startWeek} 开始
+                      {lesson.lastOccurrenceDate
+                        ? `，最后一次课：${lesson.lastOccurrenceDate}`
+                        : '，默认持续至学期结束'}
+                    </p>
+                  </div>
+                  {!lesson.lastOccurrenceDate && (
+                    <div className="flex flex-wrap gap-2">
                       <Button
                         disabled={loading}
-                        onClick={() => beginEnd(lesson)}
+                        onClick={() => beginEdit(lesson)}
                         size="sm"
                         variant="outline"
                       >
-                        <CircleStop /> 结束课程
+                        <Pencil /> 修改
                       </Button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {!lesson.lastOccurrenceDate && pauseCandidates.length > 0 && (
-                <div className="mt-3 flex flex-col gap-2 border-t pt-3 sm:flex-row sm:items-center">
-                  <select
-                    className="h-9 min-w-48 rounded-md border bg-background px-3 text-sm"
-                    disabled={loading}
-                    onChange={(event) =>
-                      setPauseDates((current) => ({
-                        ...current,
-                        [lesson.id]: event.target.value,
-                      }))
-                    }
-                    value={selectedPause}
-                  >
-                    {pauseCandidates.map((item) => (
-                      <option key={item.date} value={item.date}>
-                        {item.date}（{WEEKDAYS[lesson.weekday - 1]}）
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    disabled={loading || !selectedPause}
-                    onClick={() =>
-                      void executeMutation({
-                        url: `/api/admin/lessons/${lesson.id}/pauses/${selectedPause}`,
-                        method: 'PUT',
-                        successMessage: `${selectedPause} 已设为停课，两个时段已释放。`,
-                      })
-                    }
-                    size="sm"
-                    variant="outline"
-                  >
-                    <CalendarOff /> 设置该周停课
-                  </Button>
+                      {lesson.canDelete ? (
+                        <Button
+                          disabled={loading}
+                          onClick={() =>
+                            void executeMutation({
+                              url: `/api/admin/lessons/${lesson.id}`,
+                              method: 'DELETE',
+                              successMessage: '未开始的固定鼓课已删除。',
+                            })
+                          }
+                          size="sm"
+                          variant="destructive"
+                        >
+                          <Trash2 /> 删除
+                        </Button>
+                      ) : (
+                        <Button
+                          disabled={loading}
+                          onClick={() => beginEnd(lesson)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <CircleStop /> 结束课程
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
 
-              {paused.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2 border-t pt-3">
-                  <span className="self-center text-xs font-semibold text-muted-foreground">
-                    停课周：
-                  </span>
-                  {paused.map((item) => (
-                    <Button
-                      disabled={
-                        loading ||
-                        item.started ||
-                        Boolean(lesson.lastOccurrenceDate)
+                {!lesson.lastOccurrenceDate && pauseCandidates.length > 0 && (
+                  <div className="mt-3 flex flex-col gap-2 border-t pt-3 sm:flex-row sm:items-center">
+                    <select
+                      className="h-9 min-w-48 rounded-md border bg-background px-3 text-sm"
+                      disabled={loading}
+                      onChange={(event) =>
+                        setPauseDates((current) => ({
+                          ...current,
+                          [lesson.id]: event.target.value,
+                        }))
                       }
-                      key={item.date}
+                      value={selectedPause}
+                    >
+                      {pauseCandidates.map((item) => (
+                        <option key={item.date} value={item.date}>
+                          {item.date}（{WEEKDAYS[lesson.weekday - 1]}）
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      disabled={loading || !selectedPause}
                       onClick={() =>
                         void executeMutation({
-                          url: `/api/admin/lessons/${lesson.id}/pauses/${item.date}`,
-                          method: 'DELETE',
-                          successMessage: `${item.date} 已恢复上课。`,
+                          url: `/api/admin/lessons/${lesson.id}/pauses/${selectedPause}`,
+                          method: 'PUT',
+                          successMessage: `${selectedPause} 已设为停课，两个时段已释放。`,
                         })
                       }
                       size="sm"
                       variant="outline"
                     >
-                      {!item.started && !lesson.lastOccurrenceDate && <Play />}
-                      {item.date}
-                      {item.started
-                        ? '（已过去）'
-                        : lesson.lastOccurrenceDate
-                          ? ''
-                          : '（恢复）'}
+                      <CalendarOff /> 设置该周停课
                     </Button>
-                  ))}
-                </div>
-              )}
-            </article>
-          );
-        })}
-      </div>
+                  </div>
+                )}
+
+                {paused.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2 border-t pt-3">
+                    <span className="self-center text-xs font-semibold text-muted-foreground">
+                      停课周：
+                    </span>
+                    {paused.map((item) => (
+                      <Button
+                        disabled={
+                          loading ||
+                          item.started ||
+                          Boolean(lesson.lastOccurrenceDate)
+                        }
+                        key={item.date}
+                        onClick={() =>
+                          void executeMutation({
+                            url: `/api/admin/lessons/${lesson.id}/pauses/${item.date}`,
+                            method: 'DELETE',
+                            successMessage: `${item.date} 已恢复上课。`,
+                          })
+                        }
+                        size="sm"
+                        variant="outline"
+                      >
+                        {!item.started && !lesson.lastOccurrenceDate && (
+                          <Play />
+                        )}
+                        {item.date}
+                        {item.started
+                          ? '（已过去）'
+                          : lesson.lastOccurrenceDate
+                            ? ''
+                            : '（恢复）'}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
 
       <p
         aria-live="polite"

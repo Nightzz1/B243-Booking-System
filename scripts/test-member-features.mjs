@@ -331,6 +331,55 @@ try {
   console.log(
     'PASS admin-only reset, session revocation, reusable new password and voluntary password change',
   );
+  const management = await import('../app/api/admin/users/route.ts');
+  for (const status of ['pending', 'rejected']) {
+    const id = randomUUID();
+    await pool.query(
+      "INSERT INTO users (id, account, password_hash, display_name, contact, role, status) VALUES ($1, $2, $3, '审核测试', 'test', 'member', $4)",
+      [id, `review_${status}`, hash, status],
+    );
+    const promotion = { userId: id, action: 'set_role', role: 'club_admin' };
+    assert.equal(
+      (await management.PATCH(request(users[2].token, promotion))).status,
+      409,
+    );
+    assert.equal(
+      (await pool.query('SELECT status FROM users WHERE id=$1', [id])).rows[0]
+        .status,
+      status,
+    );
+    assert.equal(
+      (
+        await management.PATCH(
+          request(users[2].token, { userId: id, action: 'approve' }),
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await management.PATCH(request(users[1].token, promotion))).status,
+      403,
+    );
+    assert.equal(
+      (await management.PATCH(request(users[2].token, promotion))).status,
+      200,
+    );
+    assert.equal(
+      (
+        await management.PATCH(
+          request(users[2].token, { ...promotion, role: 'member' }),
+        )
+      ).status,
+      200,
+    );
+    const saved = (
+      await pool.query('SELECT role, status FROM users WHERE id=$1', [id])
+    ).rows[0];
+    assert.deepEqual(saved, { role: 'member', status: 'approved' });
+  }
+  console.log(
+    'PASS approved-only administrator assignment and system-admin-only role changes',
+  );
   const { testAuthRateLimits } = await import('./test-auth-rate-limits.mjs');
   await testAuthRateLimits(pool, auth, hash);
   const { testSharedPractice } = await import('./test-shared-practice.mjs');

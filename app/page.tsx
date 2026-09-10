@@ -44,6 +44,10 @@ import { AdminPasswordReset } from '@/components/password-reset';
 import { SharedPracticeDialog } from '@/components/shared-practice-dialog';
 import { PRACTICE_LABELS, type PracticeMode } from '@/lib/practice';
 import type { Booking } from '@/lib/booking-types';
+import {
+  AccountManagement,
+  type AccountView,
+} from '@/components/account-management';
 import { MyBookings } from '@/components/my-bookings';
 import {
   maxVisibleWeekOffsetForRole,
@@ -124,12 +128,6 @@ const ROLE_LABELS: Record<UserRole, string> = {
   system_admin: '系统管理员',
   club_admin: '鼓房管理员',
   member: '普通社员',
-};
-
-const STATUS_LABELS: Record<UserStatus, string> = {
-  pending: '待审核',
-  approved: '已通过',
-  rejected: '未通过',
 };
 
 function startOfWeek(date: Date) {
@@ -466,6 +464,7 @@ export default function Home() {
   const [cancelEntry, setCancelEntry] = useState<Booking | null>(null);
   const [contactEntry, setContactEntry] = useState<Booking | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [accountView, setAccountView] = useState<AccountView>('overview');
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminNotice, setAdminNotice] = useState('');
@@ -481,6 +480,8 @@ export default function Home() {
     setResetTarget(null);
     setAccountOpen(false);
     setAdminOpen(false);
+    setManagedUsers([]);
+    setAccountView('overview');
     scheduleRequest.current += 1;
     displayedWeekOffset.current = 0;
     setWeekOffset(0);
@@ -900,6 +901,31 @@ export default function Home() {
     }
   }
 
+  useEffect(() => {
+    if (!canManage || adminLoading) return;
+    let active = true;
+    const refresh = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const response = await fetch('/api/admin/users', { cache: 'no-store' });
+        const data = await readJson<{ users?: ManagedUser[] }>(response);
+        if (active && response.ok && data.users) setManagedUsers(data.users);
+      } catch {
+        /* Keep the last successfully loaded count. */
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 60_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [canManage, user?.id, adminLoading]);
+
   async function openAdmin() {
     setAdminOpen(true);
     setAdminLoading(true);
@@ -1142,6 +1168,17 @@ export default function Home() {
                 variant="outline"
               >
                 <ClipboardCheck /> 管理设置
+                {managedUsers.some((item) => item.status === 'pending') && (
+                  <span
+                    className="rounded-full bg-amber-200 px-2 text-xs font-bold text-amber-950"
+                    aria-label="待审核账号人数"
+                  >
+                    {
+                      managedUsers.filter((item) => item.status === 'pending')
+                        .length
+                    }
+                  </span>
+                )}
               </Button>
             )}
             <div className="hidden text-right sm:block">
@@ -1791,7 +1828,10 @@ export default function Home() {
       <Dialog
         onOpenChange={(open) => {
           setAdminOpen(open);
-          if (!open) setResetTarget(null);
+          if (!open) {
+            setResetTarget(null);
+            setAccountView('overview');
+          }
         }}
         open={adminOpen}
       >
@@ -1805,202 +1845,82 @@ export default function Home() {
             </DialogDescription>
           </DialogHeader>
 
-          <section className="rounded-2xl border bg-muted/35 p-4">
-            <div>
-              <p className="font-bold">本学期时间</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                学期必须从周一开始、在周日结束。学期内使用 13
-                节学期表，其他完整周使用 11 节假期表。
-              </p>
-            </div>
-            <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-              <label
-                className="grid gap-1.5 text-sm font-semibold"
-                htmlFor="semester-start"
-              >
-                开始日期
-                <Input
-                  disabled={adminLoading}
-                  id="semester-start"
-                  onChange={(event) => setSemesterStart(event.target.value)}
-                  type="date"
-                  value={semesterStart}
-                />
-              </label>
-              <label
-                className="grid gap-1.5 text-sm font-semibold"
-                htmlFor="semester-end"
-              >
-                结束日期
-                <Input
-                  disabled={adminLoading}
-                  id="semester-end"
-                  min={semesterStart}
-                  onChange={(event) => setSemesterEnd(event.target.value)}
-                  type="date"
-                  value={semesterEnd}
-                />
-              </label>
-              <Button
-                disabled={
-                  adminLoading ||
-                  !semesterStart ||
-                  !semesterEnd ||
-                  (bookingSettings?.semesterStart === semesterStart &&
-                    bookingSettings?.semesterEnd === semesterEnd)
-                }
-                onClick={() => void saveSemesterSettings()}
-              >
-                保存学期时间
-              </Button>
-            </div>
-          </section>
-
-          <LessonManagement
-            active={adminOpen}
-            onScheduleChange={refreshBookings}
-            settings={bookingSettings}
-          />
-
-          <div className="mt-2">
-            <h3 className="font-bold">账号审核与身份管理</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              已审核账号的身份设置会单独显示在账号卡片下方。
-            </p>
-          </div>
-
-          <div className="grid gap-3">
-            {adminLoading && managedUsers.length === 0 && (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                正在加载账号…
-              </p>
-            )}
-            {!adminLoading && managedUsers.length === 0 && (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                目前没有注册申请。
-              </p>
-            )}
-            {managedUsers.map((item) => {
-              const mayReview =
-                user.role === 'system_admin' || item.role === 'member';
-              return (
-                <div className="rounded-2xl border bg-card p-4" key={item.id}>
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-bold">{item.displayName}</p>
-                        <Badge
-                          variant={
-                            item.status === 'approved'
-                              ? 'secondary'
-                              : item.status === 'rejected'
-                                ? 'destructive'
-                                : 'default'
-                          }
-                        >
-                          {STATUS_LABELS[item.status]}
-                        </Badge>
-                        <Badge variant="outline">
-                          {ROLE_LABELS[item.role]}
-                        </Badge>
-                      </div>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        账号：{item.account}
-                      </p>
-                      <p className="mt-0.5 break-all text-sm text-muted-foreground">
-                        电话：{item.phone}
-                      </p>
-                      <p className="mt-0.5 break-all text-sm text-muted-foreground">
-                        微信：{item.wechat}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {user.role === 'system_admin' &&
-                        item.status === 'approved' && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={adminLoading}
-                            onClick={() => setResetTarget(item)}
-                          >
-                            重置密码
-                          </Button>
-                        )}
-                      {item.status !== 'approved' && mayReview && (
-                        <Button
-                          disabled={adminLoading}
-                          onClick={() =>
-                            void updateManagedUser(item.id, 'approve')
-                          }
-                          size="sm"
-                        >
-                          <Check /> 通过
-                        </Button>
-                      )}
-                      {item.status !== 'rejected' && mayReview && (
-                        <Button
-                          disabled={adminLoading}
-                          onClick={() =>
-                            void updateManagedUser(item.id, 'reject')
-                          }
-                          size="sm"
-                          variant="destructive"
-                        >
-                          拒绝
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {user.role === 'system_admin' && (
-                    <div className="mt-4 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="text-sm font-bold">鼓房管理员权限</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {item.status === 'approved'
-                            ? '选择该账号在系统中的身份。'
-                            : '请先通过该账号的注册申请，再设置身份。'}
-                        </p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 sm:flex">
-                        <Button
-                          disabled={adminLoading || item.status !== 'approved'}
-                          onClick={() =>
-                            void updateManagedUser(
-                              item.id,
-                              'set_role',
-                              'member',
-                            )
-                          }
-                          size="sm"
-                          variant={
-                            item.role === 'member' ? 'default' : 'outline'
-                          }
-                        >
-                          普通社员
-                        </Button>
-                        <Button
-                          disabled={adminLoading || item.status !== 'approved'}
-                          onClick={() =>
-                            void updateManagedUser(
-                              item.id,
-                              'set_role',
-                              'club_admin',
-                            )
-                          }
-                          size="sm"
-                          variant={
-                            item.role === 'club_admin' ? 'default' : 'outline'
-                          }
-                        >
-                          鼓房管理员
-                        </Button>
-                      </div>
-                    </div>
-                  )}
+          {accountView === 'overview' && (
+            <>
+              <section className="rounded-2xl border bg-muted/35 p-4">
+                <div>
+                  <p className="font-bold">本学期时间</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    学期必须从周一开始、在周日结束。学期内使用 13
+                    节学期表，其他完整周使用 11 节假期表。
+                  </p>
                 </div>
-              );
-            })}
-          </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                  <label
+                    className="grid gap-1.5 text-sm font-semibold"
+                    htmlFor="semester-start"
+                  >
+                    开始日期
+                    <Input
+                      disabled={adminLoading}
+                      id="semester-start"
+                      onChange={(event) => setSemesterStart(event.target.value)}
+                      type="date"
+                      value={semesterStart}
+                    />
+                  </label>
+                  <label
+                    className="grid gap-1.5 text-sm font-semibold"
+                    htmlFor="semester-end"
+                  >
+                    结束日期
+                    <Input
+                      disabled={adminLoading}
+                      id="semester-end"
+                      min={semesterStart}
+                      onChange={(event) => setSemesterEnd(event.target.value)}
+                      type="date"
+                      value={semesterEnd}
+                    />
+                  </label>
+                  <Button
+                    disabled={
+                      adminLoading ||
+                      !semesterStart ||
+                      !semesterEnd ||
+                      (bookingSettings?.semesterStart === semesterStart &&
+                        bookingSettings?.semesterEnd === semesterEnd)
+                    }
+                    onClick={() => void saveSemesterSettings()}
+                  >
+                    保存学期时间
+                  </Button>
+                </div>
+              </section>
+
+              <LessonManagement
+                active={adminOpen}
+                onScheduleChange={refreshBookings}
+                settings={bookingSettings}
+              />
+            </>
+          )}
+          <AccountManagement
+            users={managedUsers}
+            systemAdmin={user.role === 'system_admin'}
+            busy={adminLoading}
+            view={accountView}
+            onView={(view) => {
+              setAccountView(view);
+              setAdminNotice('');
+            }}
+            onUpdate={updateManagedUser}
+            onReset={(id) =>
+              setResetTarget(
+                managedUsers.find((item) => item.id === id) ?? null,
+              )
+            }
+          />
 
           <p
             aria-live="polite"
