@@ -1,3 +1,4 @@
+import { mutationRateError } from '@/lib/mutation-guard';
 import { recordAdminAction } from '@/lib/admin-audit';
 import { randomBytes } from 'node:crypto';
 import { getPool } from '@/db';
@@ -12,6 +13,8 @@ export async function POST(
 ) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
   const { id } = await context.params;
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)

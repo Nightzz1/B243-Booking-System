@@ -1,3 +1,5 @@
+import { mutationRateError } from '@/lib/mutation-guard';
+import { readJsonBody } from '@/lib/http';
 import type { PoolClient } from 'pg';
 import type { PracticeMode } from '@/lib/practice';
 import { getAuthUser, type AuthUser } from '@/lib/auth';
@@ -231,16 +233,11 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
 
-  let body: { slots?: unknown };
-  try {
-    const value: unknown = await request.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value))
-      return json({ error: '请求内容格式不正确。' }, 400);
-    body = value as typeof body;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
-  }
+  const body = await readJsonBody(request, 8192);
+  if (body instanceof Response) return body;
 
   let user: AuthUser | null;
   let policy: BookingPolicy;

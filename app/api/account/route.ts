@@ -1,3 +1,5 @@
+import { mutationRateError } from '@/lib/mutation-guard';
+import { readJsonBody } from '@/lib/http';
 import { getPool } from '@/db';
 import {
   clearSessionCookie,
@@ -15,15 +17,11 @@ export const runtime = 'nodejs';
 export async function PATCH(request: Request) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
-  let body: Record<string, unknown>;
-  try {
-    const value: unknown = await request.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value))
-      return json({ error: '请求内容格式不正确。' }, 400);
-    body = value as Record<string, unknown>;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
-  }
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
+  const body = await readJsonBody(request, 8192);
+  if (body instanceof Response) return body;
+
   const passwordChange = body.action === 'password';
   if (!passwordChange && body.action !== 'profile')
     return json({ error: '不支持的操作。' }, 400);

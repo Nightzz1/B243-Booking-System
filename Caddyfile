@@ -1,5 +1,18 @@
+{
+  servers {
+    timeouts {
+      read_header 10s
+      read_body 30s
+      idle 2m
+    }
+  }
+}
+
 {$SITE_ADDRESS} {
   encode zstd gzip
+  request_body {
+    max_size 64KiB
+  }
   reverse_proxy app:3000 {
     header_up X-Booking-Client-IP {remote_host}
   }

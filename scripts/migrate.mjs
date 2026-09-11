@@ -1,3 +1,4 @@
+import { configureDatabaseRoles } from './database-roles.mjs';
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -53,7 +54,10 @@ try {
     .sort();
 
   for (const filename of filenames) {
-    const sql = await readFile(path.join(migrationsDirectory, filename), 'utf8');
+    const sql = await readFile(
+      path.join(migrationsDirectory, filename),
+      'utf8',
+    );
     const checksum = createHash('sha256').update(sql).digest('hex');
     const existing = await client.query(
       'SELECT checksum FROM _app_migrations WHERE filename = $1',
@@ -62,7 +66,9 @@ try {
 
     if (existing.rowCount) {
       if (existing.rows[0].checksum !== checksum) {
-        throw new Error(`Migration ${filename} was modified after being applied.`);
+        throw new Error(
+          `Migration ${filename} was modified after being applied.`,
+        );
       }
       console.log(`Already applied: ${filename}`);
       continue;
@@ -82,6 +88,7 @@ try {
       throw error;
     }
   }
+  await configureDatabaseRoles(client);
 } finally {
   if (client) {
     try {

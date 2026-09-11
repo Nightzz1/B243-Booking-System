@@ -8,6 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import pg from 'pg';
 import ts from 'typescript';
 
+process.env.APP_ORIGINS = 'https://booking.test';
+process.env.WRITE_CREDENTIAL_LIMIT = '1000';
+process.env.WRITE_ACCOUNT_LIMIT = '1000';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 registerHooks({
   resolve(specifier, context, next) {
@@ -72,6 +76,10 @@ try {
     url.pathname = `/${name}`;
     process.env.DATABASE_URL = url.href;
   } else process.env.PGDATABASE = name;
+  if (!process.env.DATABASE_URL) {
+    process.env.PGUSER = connection.user;
+    process.env.PGPASSWORD = connection.password;
+  }
   ({ getPool: pool } = await import('../db/index.ts'));
   pool = pool();
   for (const file of readdirSync(path.join(root, 'drizzle'))
@@ -419,6 +427,8 @@ try {
   await testAuthRateLimits(pool, auth, hash);
   const { testSharedPractice } = await import('./test-shared-practice.mjs');
   await testSharedPractice(pool, auth, hash);
+  const { testRequestSecurity } = await import('./test-request-security.mjs');
+  await testRequestSecurity(pool);
 } finally {
   if (pool) await pool.end();
   if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);

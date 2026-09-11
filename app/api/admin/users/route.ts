@@ -1,3 +1,5 @@
+import { mutationRateError } from '@/lib/mutation-guard';
+import { readJsonBody } from '@/lib/http';
 import { recordAdminAction } from '@/lib/admin-audit';
 import {
   canReviewUsers,
@@ -68,13 +70,11 @@ export async function GET(request: Request) {
 export async function PATCH(request: Request) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
 
-  let body: { userId?: unknown; action?: unknown; role?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
-  }
+  const body = await readJsonBody(request, 8192);
+  if (body instanceof Response) return body;
 
   const userId = typeof body.userId === 'string' ? body.userId : '';
   const action = typeof body.action === 'string' ? body.action : '';

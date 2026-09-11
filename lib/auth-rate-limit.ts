@@ -152,3 +152,29 @@ export async function releaseLoginAttempt(attempt: LoginAttempt) {
     [attempt.key, attempt.generation],
   );
 }
+
+export async function limitSensitiveMutation(
+  request: Request,
+  userId: string,
+  credential = false,
+) {
+  const scope = credential ? 'credential-write' : 'business-write';
+  const account = await consume(scope, userId, {
+    limit: setting(
+      credential ? 'WRITE_CREDENTIAL_LIMIT' : 'WRITE_ACCOUNT_LIMIT',
+      credential ? 10 : 60,
+    ),
+    windowSeconds: credential ? 600 : 60,
+    cooldownSeconds: 60,
+  });
+  if (account instanceof Response) return account;
+  if (process.env.AUTH_TRUST_PROXY === 'true') {
+    const ip = await consume('business-write-ip', clientIpKey(request), {
+      limit: setting('WRITE_IP_LIMIT', 600),
+      windowSeconds: 60,
+      cooldownSeconds: 60,
+    });
+    if (ip instanceof Response) return ip;
+  }
+  return null;
+}

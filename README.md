@@ -483,6 +483,7 @@ docker compose ps db backup-verify
 
 ```bash
 RESTORE_FILE=booking-20260911T015637Z.dump
+RESTORE_DIRECTORY=./backups
 
 docker compose run --rm --no-deps --entrypoint sh \
   backup /scripts/verify.sh "$RESTORE_FILE"
@@ -495,13 +496,13 @@ docker compose run --rm --no-deps --entrypoint sh \
 以下统一使用 `drum_room_recovered`。如果这个名字已经存在，请换一个尚未使用的名字，并同步替换后续命令和 `.env` 中的名称。不要为了重试而删除原业务数据库。
 
 ```bash
-docker compose run --rm --no-deps --entrypoint sh backup \
-  -c 'createdb --template=template0 drum_room_recovered'
+docker compose exec -T db sh -c \
+  'createdb -U "$POSTGRES_USER" --template=template0 drum_room_recovered'
 
-docker compose run --rm --no-deps --entrypoint sh backup \
-  -c 'pg_restore --dbname=drum_room_recovered \
-    --no-owner --no-acl --exit-on-error --single-transaction \
-    "/backups/$1"' sh "$RESTORE_FILE"
+docker compose exec -T db sh -c \
+  'pg_restore -U "$POSTGRES_USER" --dbname=drum_room_recovered \
+    --no-owner --no-acl --exit-on-error --single-transaction' \
+  < "$RESTORE_DIRECTORY/$RESTORE_FILE"
 ```
 
 第二条命令从挂载的备份目录读取文件，在生产 PostgreSQL 实例中的新数据库恢复。单事务模式在发生错误时回滚本次导入；原数据库不被覆盖。若失败，排查后使用另一个新的数据库名重试。
@@ -509,8 +510,8 @@ docker compose run --rm --no-deps --entrypoint sh backup \
 **4. 撤销旧会话并检查基础数据。**
 
 ```bash
-docker compose run --rm --no-deps --entrypoint sh backup \
-  -c 'psql -X -v ON_ERROR_STOP=1 -d drum_room_recovered \
+docker compose exec -T db sh \
+  -c 'psql -U "$POSTGRES_USER" -X -v ON_ERROR_STOP=1 -d drum_room_recovered \
     -c "DELETE FROM sessions;" \
     -c "SELECT count(*) AS users FROM users;" \
     -c "SELECT count(*) AS bookings FROM bookings;" \
@@ -564,3 +565,30 @@ docker compose logs --tail=100 backup
 5. 验收通过后再将域名流量切换到新服务器，确认 HTTPS 和自动备份正常。
 
 如果原服务器磁盘和同机备份一并丢失，且没有异地副本，就无法依靠本功能找回数据。代码仓库不包含数据库备份或部署密钥，正式上线前应单独保管这两类资料。
+
+## 数据库最小权限与请求保护
+
+Compose 的 `app` 使用 `booking_app`，只获得业务表必要的读写权限，不能建表、删表或管理数据库角色。`admin_audit_logs` 只允许追加和读取，不允许更新、删除或清空；迁移账本 `_app_migrations` 不对网站开放。网站账号设置查询超时 30 秒、锁等待 5 秒及空闲事务超时 30 秒。普通业务数据仍可被该账号修改，因此权限隔离不能替代接口鉴权和备份。
+
+`migrate` 继续使用部署维护账号 `POSTGRES_USER`，高权限凭据不会注入网站容器。每次迁移成功后执行 `scripts/database-roles.mjs`，为现有数据库幂等配置角色和授权，无需重建数据卷。业务表由维护账号拥有，不要将表所有权转给网站账号。脚本会移除这两个专用角色已有的角色成员资格，请勿将它们用作其他应用的共享账号。
+
+生产备份使用只读账号 `booking_backup`。独立验证实例使用 `backup_verifier` 及独立密码，允许在该实例建立和删除临时恢复数据库。生产恢复必须使用维护账号；上面的手动恢复命令已改为通过 `db` 服务执行，不能再用只读 `backup` 账号建库。请将恢复步骤的 `RESTORE_DIRECTORY` 设置为实际 `BACKUP_DIRECTORY` 路径，导入通过宿主机标准输入传递备份文件。备份不包含数据库角色密码和授权，恢复后必须执行迁移重新授权。
+
+升级现有部署时：
+
+1. 在 `.env` 设置不同的 `APP_DB_PASSWORD`、`BACKUP_DB_PASSWORD`、`VERIFY_DB_PASSWORD`，每个使用至少 24 字符的随机密码，不得复用 `POSTGRES_PASSWORD`。可分别运行 `openssl rand -hex 32` 生成并妥善保存，不提交到 Git。
+2. 设置 `APP_ORIGINS` 为实际网站完整来源，例如 `https://booking.example.com`，不带路径或末尾斜杠，多个来源用逗号分隔。本机示例为 `http://localhost,http://127.0.0.1,http://localhost:3000,http://127.0.0.1:3000`，局域网访问须额外添加实际来源。生产不要保留不使用的来源。
+3. 停止旧应用和备份，运行 `docker compose build migrate app`，再执行 `docker compose run --rm --no-deps migrate`（数据库需运行）。成功后执行 `docker compose up -d` 重建服务，使新账号和代理配置生效。
+4. 检查登录、预约、管理日志及备份恢复验证。轮换专用账号密码也按上述顺序执行，重启应用以关闭旧连接。
+
+本机 `pnpm dev` 在未显式设置 `PGUSER` / `PGPASSWORD` 或 `DATABASE_URL` 时，会优先使用 `APP_DB_PASSWORD` 对应的 `booking_app`。迁移命令仍从维护账号配置连接。外部数据库或显式连接字符串应自行配置为相应用途的账号。没有两项专用密码的旧本机配置仍可迁移，但不会配置权限隔离；Compose 部署强制要求填写。集成测试使用有建库权限的维护账号创建临时数据库。
+
+请求保护规则：
+
+- 所有 JSON 写接口使用流式大小检查：普通表单最多 8 KiB，鼓课接口最多 64 KiB；无论是否提供正确的 `Content-Length` 都执行限制。数组、`null` 和非法 JSON 返回 400，超大请求返回 413。
+- 除既有登录／注册限流外，业务写操作按账号每分钟 60 次；账号资料／改密和管理员重置密码共用账号每 10 分钟 10 次配额。`WRITE_ACCOUNT_LIMIT`、`WRITE_CREDENTIAL_LIMIT` 可调整，达到上限冷却 60 秒。读取列表和页面自动刷新不计入写配额。
+- 可信代理模式下所有业务写入再共用较宽松的 IP 配额，默认每分钟 600 次，`WRITE_IP_LIMIT` 可调整，适合校园网共享出口。返回 429 和 `Retry-After`；限流存储不可用时写接口返回 503，不绕过保护。
+- 生产来源校验使用 `APP_ORIGINS` 精确匹配协议、主机及端口，不使用客户端传来的 `X-Forwarded-Host`。可信代理模式未配置来源时拒绝写入；非代理本地模式未配置来源时匹配请求 URL 的完整来源。应用端口不可直接暴露公网，Caddy 必须覆盖 `X-Booking-Client-IP`。
+- Caddy 对请求体统一限制 64 KiB，请求头读取超时 10 秒、请求体读取超时 30 秒。Next 响应添加禁止嵌入、禁止类型猜测、来源信息策略，以及 `frame-ancestors`、`object-src`、`base-uri` 限制；尚未启用可能影响 Next 内联脚本的严格 `script-src` 策略。
+
+这些措施缓解应用层资源滥用，不能抵御超过服务器带宽的大流量攻击，上游防护需要单独部署。

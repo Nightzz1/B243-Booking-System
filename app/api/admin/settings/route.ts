@@ -1,3 +1,5 @@
+import { mutationRateError } from '@/lib/mutation-guard';
+import { readJsonBody } from '@/lib/http';
 import { canManageActivities, getAuthUser } from '@/lib/auth';
 import { json, mutationOriginError } from '@/lib/http';
 import { getBookingPolicy, isoWeekday, isRealDate } from '@/lib/schedule';
@@ -28,13 +30,11 @@ export async function GET(request: Request) {
 export async function PATCH(request: Request) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
 
-  let body: { semesterStart?: unknown; semesterEnd?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
-  }
+  const body = await readJsonBody(request, 8192);
+  if (body instanceof Response) return body;
 
   const semesterStart =
     typeof body.semesterStart === 'string' ? body.semesterStart : '';

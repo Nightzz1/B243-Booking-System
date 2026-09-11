@@ -1,3 +1,5 @@
+import { mutationRateError } from '@/lib/mutation-guard';
+import { readJsonBody } from '@/lib/http';
 import { canManageActivities, getAuthUser } from '@/lib/auth';
 import { json, mutationOriginError } from '@/lib/http';
 import {
@@ -32,13 +34,11 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
 
-  let body: Record<string, unknown>;
-  try {
-    body = (await request.json()) as Record<string, unknown>;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
-  }
+  const body = await readJsonBody(request, 65536);
+  if (body instanceof Response) return body;
 
   try {
     const user = await lessonManager(request);

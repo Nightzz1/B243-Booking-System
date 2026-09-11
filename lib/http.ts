@@ -8,16 +8,20 @@ export function json(body: unknown, status = 200) {
 export function isSameOriginMutation(request: Request) {
   const origin = request.headers.get('origin');
   if (!origin) return false;
-
   try {
-    const originHost = new URL(origin).host.toLowerCase();
-    const forwardedHost = request.headers
-      .get('x-forwarded-host')
-      ?.split(',')[0]
-      ?.trim();
-    const requestHost =
-      forwardedHost ?? request.headers.get('host') ?? new URL(request.url).host;
-    return originHost === requestHost.toLowerCase();
+    const parsed = new URL(origin);
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      parsed.origin !== origin
+    )
+      return false;
+    const configured = process.env.APP_ORIGINS?.split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    // A production proxy deployment must explicitly declare its public origins.
+    if (configured?.length) return configured.includes(parsed.origin);
+    if (process.env.AUTH_TRUST_PROXY === 'true') return false;
+    return parsed.origin === new URL(request.url).origin;
   } catch {
     return false;
   }
@@ -29,10 +33,10 @@ export function mutationOriginError(request: Request) {
     : json({ error: '请求来源验证失败，请刷新页面后重试。' }, 403);
 }
 
-export async function readAuthJson(
+export async function readJsonBody(
   request: Request,
+  maxBytes = 8192,
 ): Promise<Record<string, unknown> | Response> {
-  const maxBytes = 8192;
   if (Number(request.headers.get('content-length')) > maxBytes)
     return json({ error: '请求内容过大。' }, 413);
   const reader = request.body?.getReader();
@@ -60,3 +64,5 @@ export async function readAuthJson(
     reader.releaseLock();
   }
 }
+
+export const readAuthJson = readJsonBody;

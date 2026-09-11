@@ -1,3 +1,4 @@
+import { mutationRateError } from '@/lib/mutation-guard';
 import { canManageActivities, getAuthUser } from '@/lib/auth';
 import { json, mutationOriginError } from '@/lib/http';
 import {
@@ -31,6 +32,8 @@ export async function PUT(
 ) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
   const { id, date } = await context.params;
   if (!validId(id)) return json({ error: '课程编号格式不正确。' }, 400);
 
@@ -53,6 +56,8 @@ export async function DELETE(
 ) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
   const { id, date } = await context.params;
   if (!validId(id)) return json({ error: '课程编号格式不正确。' }, 400);
   let body: Record<string, unknown> = {};

@@ -1,3 +1,5 @@
+import { mutationRateError } from '@/lib/mutation-guard';
+import { readJsonBody } from '@/lib/http';
 import { recordAdminAction } from '@/lib/admin-audit';
 import { canManageActivities, getAuthUser, type AuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
@@ -19,13 +21,11 @@ type RequestedSlot = { date: string; slotIndex: number };
 export async function POST(request: Request) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
 
-  let body: { title?: unknown; slots?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return json({ error: '请求内容格式不正确。' }, 400);
-  }
+  const body = await readJsonBody(request, 8192);
+  if (body instanceof Response) return body;
 
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   if (!title || title.length > 80) {

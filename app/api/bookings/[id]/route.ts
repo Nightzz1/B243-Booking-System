@@ -1,3 +1,4 @@
+import { mutationRateError } from '@/lib/mutation-guard';
 import { recordAdminAction } from '@/lib/admin-audit';
 import { getAuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
@@ -20,6 +21,8 @@ export async function DELETE(
 ) {
   const originError = mutationOriginError(request);
   if (originError) return originError;
+  const rateError = await mutationRateError(request);
+  if (rateError) return rateError;
 
   const user = await getAuthUser(request);
   if (!user) return json({ error: '请先登录。' }, 401);

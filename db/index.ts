@@ -25,8 +25,13 @@ function createPool() {
       5432,
     );
     config.database = process.env.PGDATABASE ?? process.env.POSTGRES_DB;
-    config.user = process.env.PGUSER ?? process.env.POSTGRES_USER;
-    config.password = process.env.PGPASSWORD ?? process.env.POSTGRES_PASSWORD;
+    config.user =
+      process.env.PGUSER ??
+      (process.env.APP_DB_PASSWORD ? 'booking_app' : process.env.POSTGRES_USER);
+    config.password =
+      process.env.PGPASSWORD ??
+      process.env.APP_DB_PASSWORD ??
+      process.env.POSTGRES_PASSWORD;
   }
 
   if (process.env.DB_SSL === 'true') {
