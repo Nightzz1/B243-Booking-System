@@ -1,3 +1,4 @@
+import { recordAdminAction } from '@/lib/admin-audit';
 import { getAuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
 import { json, mutationOriginError } from '@/lib/http';
@@ -67,6 +68,11 @@ export async function DELETE(
     }
 
     await client.query('DELETE FROM bookings WHERE id = $1', [id]);
+    if (
+      user.role !== 'member' &&
+      (entry.entry_type === 'activity' || entry.user_id !== user.id)
+    )
+      await recordAdminAction(client, user.id, 'schedule.cancel', id, entry);
     await client.query('COMMIT');
     return json({ deleted: true, id });
   } catch (error) {

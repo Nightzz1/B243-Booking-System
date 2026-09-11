@@ -1,3 +1,4 @@
+import { recordAdminAction } from '@/lib/admin-audit';
 import { randomBytes } from 'node:crypto';
 import { getPool } from '@/db';
 import { getAuthUser, hashPassword } from '@/lib/auth';
@@ -51,6 +52,7 @@ export async function POST(
         [await hashPassword(newPassword), id],
       );
       await client.query('DELETE FROM sessions WHERE user_id = $1', [id]);
+      await recordAdminAction(client, actor.id, 'account.reset_password', id);
       await client.query('COMMIT');
       return json({ newPassword });
     } catch (error) {

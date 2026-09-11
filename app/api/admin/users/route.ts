@@ -1,3 +1,4 @@
+import { recordAdminAction } from '@/lib/admin-audit';
 import {
   canReviewUsers,
   getAuthUser,
@@ -85,73 +86,80 @@ export async function PATCH(request: Request) {
     const actor = await reviewer(request);
     if (!actor) return json({ error: '没有账号审核权限。' }, 403);
 
-    const targetResult = await getPool().query<{
-      id: string;
-      role: UserRole;
-      status: UserStatus;
-    }>('SELECT id, role, status FROM users WHERE id = $1', [userId]);
-    const target = targetResult.rows[0];
-    if (!target) return json({ error: '用户不存在。' }, 404);
-    if (target.role === 'system_admin') {
-      return json({ error: '系统管理员账号不能在这里修改。' }, 403);
-    }
-    if (actor.role === 'club_admin' && target.role !== 'member') {
-      return json({ error: '鼓房管理员只能审核普通社员账号。' }, 403);
-    }
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      const targetResult = await client.query<{
+        id: string;
+        role: UserRole;
+        status: UserStatus;
+      }>('SELECT id, role, status FROM users WHERE id = $1 FOR UPDATE', [
+        userId,
+      ]);
+      const target = targetResult.rows[0];
+      if (!target) return json({ error: '用户不存在。' }, 404);
+      if (target.role === 'system_admin') {
+        return json({ error: '系统管理员账号不能在这里修改。' }, 403);
+      }
+      if (actor.role === 'club_admin' && target.role !== 'member') {
+        return json({ error: '鼓房管理员只能审核普通社员账号。' }, 403);
+      }
 
-    if (action === 'approve') {
-      await getPool().query(
-        `UPDATE users
-         SET status = 'approved', approved_by = $1, approved_at = now(), updated_at = now()
-         WHERE id = $2`,
-        [actor.id, userId],
-      );
-    } else if (action === 'reject') {
-      const client = await getPool().connect();
-      try {
-        await client.query('BEGIN');
+      if (action === 'approve') {
         await client.query(
           `UPDATE users
-           SET status = 'rejected', approved_by = $1, approved_at = now(), updated_at = now()
-           WHERE id = $2`,
+         SET status = 'approved', approved_by = $1, approved_at = now(), updated_at = now()
+         WHERE id = $2`,
+          [actor.id, userId],
+        );
+      } else if (action === 'reject') {
+        await client.query(
+          `UPDATE users SET status = 'rejected', approved_by = $1, approved_at = now(), updated_at = now() WHERE id = $2`,
           [actor.id, userId],
         );
         await client.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-    } else if (action === 'set_role') {
-      if (actor.role !== 'system_admin') {
-        return json({ error: '只有系统管理员可以设置账号身份。' }, 403);
-      }
-      if (body.role !== 'member' && body.role !== 'club_admin') {
-        return json({ error: '账号身份不正确。' }, 400);
-      }
-      const changed = await getPool().query(
-        `UPDATE users SET role = $1, updated_at = now()
+      } else if (action === 'set_role') {
+        if (actor.role !== 'system_admin') {
+          return json({ error: '只有系统管理员可以设置账号身份。' }, 403);
+        }
+        if (body.role !== 'member' && body.role !== 'club_admin') {
+          return json({ error: '账号身份不正确。' }, 400);
+        }
+        const changed = await client.query(
+          `UPDATE users SET role = $1, updated_at = now()
          WHERE id = $2 AND status = 'approved' RETURNING id`,
-        [body.role, userId],
-      );
-      if (!changed.rowCount)
-        return json({ error: '只能设置已审核通过账号的身份。' }, 409);
-    } else {
-      return json({ error: '不支持的管理操作。' }, 400);
-    }
+          [body.role, userId],
+        );
+        if (!changed.rowCount)
+          return json({ error: '只能设置已审核通过账号的身份。' }, 409);
+      } else {
+        return json({ error: '不支持的管理操作。' }, 400);
+      }
 
-    const updated = await getPool().query<ManagedUserRow>(
-      `SELECT id, account, display_name,
+      const updated = await client.query<ManagedUserRow>(
+        `SELECT id, account, display_name,
               COALESCE(phone, contact) AS phone,
               COALESCE(wechat, contact) AS wechat,
               role, status,
               created_at::text AS created_at, approved_at::text AS approved_at
        FROM users WHERE id = $1`,
-      [userId],
-    );
-    return json({ user: toManagedUser(updated.rows[0]) });
+        [userId],
+      );
+      await recordAdminAction(client, actor.id, `account.${action}`, userId, {
+        account: updated.rows[0].account,
+        name: updated.rows[0].display_name,
+        before: { role: target.role, status: target.status },
+        after: { role: updated.rows[0].role, status: updated.rows[0].status },
+      });
+      await client.query('COMMIT');
+      return json({ user: toManagedUser(updated.rows[0]) });
+    } finally {
+      try {
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    }
   } catch (error) {
     console.error('Failed to update managed user', error);
     return json({ error: '账号更新失败，请稍后重试。' }, 500);

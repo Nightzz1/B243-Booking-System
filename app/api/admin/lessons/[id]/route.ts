@@ -68,7 +68,7 @@ export async function DELETE(
   try {
     const user = await lessonManager(request);
     if (!user) return json({ error: '没有固定鼓课管理权限。' }, 403);
-    await deleteLesson(id);
+    await deleteLesson(id, user.id);
     return json({ deleted: true, id });
   } catch (error) {
     const known = lessonErrorResponse(error);

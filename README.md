@@ -413,3 +413,154 @@ pnpm db:migrate
 个人预约还会在同一数据库事务中锁定当前用户记录并检查周配额。这样即使同一账号从两台设备同时提交，也不能越过每周 2 个时段的限制。
 
 应用层连接池用于复用数据库连接，默认每个应用进程最多使用 10 个连接。它能承受社团规模的并发访问；后续如果访问量明显增加，可以增加应用实例、调整连接池，并配合限流和监控进行容量评估。
+
+
+## 管理操作记录
+
+执行 `pnpm db:migrate` 应用 `0008_admin_audit.sql` 后，系统管理员可在管理设置中点击“管理操作记录”，分页查看成功的账号审核、身份修改、密码重置、学期设置、鼓课、活动及代他人取消预约操作。记录与业务修改在同一事务中提交，失败或回滚的业务不会产生成功记录。现有鼓课冲突审计仍保留逐人取消详情。记录不包含密码、密码哈希或会话令牌。
+
+记录从功能启用后开始，不能补回历史操作。此表不参与预约历史的每周清理，默认长期保留且随数据库备份；部署者应按实际隐私和存储需求制定保留期限。它用于追溯，不是防数据库管理员篡改的外部审计系统。仅系统管理员能读取，网页不提供修改或删除入口。
+
+## 自动备份与恢复验证
+
+完整执行 `docker compose up -d --build` 会启动 `backup` 和 `backup-verify`。备份服务启动即运行一次，随后默认每 86400 秒运行；这不是固定北京时间的定时任务。使用 PostgreSQL 17 的 `pg_dump` 自定义格式导出，不在网页提供生产库覆盖恢复操作。
+
+- `BACKUP_DIRECTORY`：宿主机备份目录，默认 `./backups`，已从 Git 和镜像构建上下文排除。
+- `BACKUP_RETENTION_DAYS`：默认 14，范围 1–3650。仅在新备份恢复验证成功后清理超过保留期限的旧文件。
+- `BACKUP_INTERVAL_SECONDS`：默认 86400，范围 3600–604800。
+- `.dump` 是完整导出，`.sha256` 是校验文件，`.verified` 表示已成功恢复验证；没有 `.verified` 的文件不可视为已验证备份。
+
+每份备份会校验 SHA-256，在单独的 `backup-verify` PostgreSQL 容器中新建临时数据库，完整恢复后检查核心表、预约排斥约束并读取记录数量，最后删除临时库。验证数据库只使用内存文件系统，不暴露宿主机端口；生产库仅被读取。大数据库需要为验证容器预留足够内存。验证覆盖可恢复性与基础结构，不替代完整的灾难恢复演练。
+
+手动运行一轮（数据库和验证容器需启动）：
+
+```bash
+docker compose run --rm --no-deps --entrypoint sh backup /scripts/run.sh
+```
+
+重新验证已有文件，传入实际文件名：
+
+```bash
+docker compose run --rm --no-deps --entrypoint sh backup /scripts/verify.sh booking-YYYYMMDDTHHMMSSZ.dump
+```
+
+查看结果：
+
+```bash
+docker compose logs --tail=100 backup
+docker compose ps backup
+```
+
+失败时脚本返回非零状态、输出错误并保留既有备份；后台调度会在下一个周期重试。超过一个备份周期加两小时没有成功备份时容器健康检查失败。Docker 本身不会发送通知，需要部署监控接入该健康状态；本次未配置短信或邮件告警。
+
+备份含账号、联系方式和密码哈希，应限制备份目录权限。当前实现落地到指定宿主机目录；如服务器磁盘损坏，同机备份也可能丢失。正式上线应将 `BACKUP_DIRECTORY` 指向受控的异地备份挂载，或通过现有加密备份系统同步到异地。本仓库不假定任何云存储账号，也没有自动配置异地上传。
+
+实际灾难恢复时，先停止应用写入，将选定备份恢复到新数据库，核对数据后再切换应用连接。不要直接对正在服务的数据库使用 `pg_restore --clean`。建议定期在隔离部署中验证登录、预约及管理员操作；恢复旧备份后还应撤销旧会话，再执行待应用迁移后开放服务。
+
+## 数据库故障后的手动恢复
+
+自动恢复验证只证明备份可以恢复，不会自动替换生产数据库。实际恢复由管理员执行。以下命令适用于仓库自带的 Docker Compose / PostgreSQL 17 部署，在项目目录使用同一个终端依次执行；任何一步报错都应停止，不要继续启动网站。外部托管数据库需要按对应服务的连接及恢复方式处理。
+
+恢复只能回到所选备份的时间点，之后的预约、账号修改和操作记录不会自动找回。默认每天备份一次，在任务持续正常运行的情况下，可能丢失最近约一天的数据；应以最后一份成功备份的实际时间为准。
+
+### 情况一：PostgreSQL 能启动，应用数据库需要恢复
+
+**1. 停止网站写入和自动备份。**
+
+```bash
+docker compose stop app backup
+docker compose up -d db backup-verify
+docker compose ps db backup-verify
+```
+
+等待两个数据库服务均显示 `healthy`。如有其他应用实例或本机开发服务连接同一数据库，也应停止。先另存 `.env` 和选定备份，不删除原数据库或数据卷，尤其不要执行 `docker compose down -v`。
+
+**2. 选择备份并重新验证。**
+
+在 `BACKUP_DIRECTORY` 指定的目录（默认 `./backups`）中选择目标时间点的备份，确认 `.dump`、`.dump.sha256`、`.dump.verified` 三个文件齐全。文件名时间为 UTC，北京时间加 8 小时。误操作恢复应选择误操作发生之前的备份，而非简单选择最新文件。
+
+将下面的示例文件名替换为实际文件名：
+
+```bash
+RESTORE_FILE=booking-20260911T015637Z.dump
+
+docker compose run --rm --no-deps --entrypoint sh \
+  backup /scripts/verify.sh "$RESTORE_FILE"
+```
+
+此命令在独立验证容器中恢复，验证完成会清理临时数据库；它不会恢复网站使用的数据库。只有命令成功退出且重新生成 `.verified` 标记后才能继续。
+
+**3. 将备份恢复到一个全新的数据库。**
+
+以下统一使用 `drum_room_recovered`。如果这个名字已经存在，请换一个尚未使用的名字，并同步替换后续命令和 `.env` 中的名称。不要为了重试而删除原业务数据库。
+
+```bash
+docker compose run --rm --no-deps --entrypoint sh backup \
+  -c 'createdb --template=template0 drum_room_recovered'
+
+docker compose run --rm --no-deps --entrypoint sh backup \
+  -c 'pg_restore --dbname=drum_room_recovered \
+    --no-owner --no-acl --exit-on-error --single-transaction \
+    "/backups/$1"' sh "$RESTORE_FILE"
+```
+
+第二条命令从挂载的备份目录读取文件，在生产 PostgreSQL 实例中的新数据库恢复。单事务模式在发生错误时回滚本次导入；原数据库不被覆盖。若失败，排查后使用另一个新的数据库名重试。
+
+**4. 撤销旧会话并检查基础数据。**
+
+```bash
+docker compose run --rm --no-deps --entrypoint sh backup \
+  -c 'psql -X -v ON_ERROR_STOP=1 -d drum_room_recovered \
+    -c "DELETE FROM sessions;" \
+    -c "SELECT count(*) AS users FROM users;" \
+    -c "SELECT count(*) AS bookings FROM bookings;" \
+    -c "SELECT count(*) AS audit_records FROM admin_audit_logs;"'
+```
+
+人数及预约数量应符合所选备份的预期。清除会话后所有人需要重新登录；社员密码、审核状态及管理员身份也会回到备份时的状态，开放网站前需要核对近期权限调整。系统管理员账号仍由部署环境变量同步。
+
+**5. 切换连接并执行迁移。**
+
+在 `.env` 中只修改数据库名，保持现有数据库用户名及密码不变：
+
+```dotenv
+POSTGRES_DB=drum_room_recovered
+```
+
+已有数据卷不会因为修改这个变量而自动创建数据库，因此必须先完成上面的建库和导入步骤。使用与当前代码匹配的迁移镜像：
+
+```bash
+docker compose build migrate app
+docker compose run --rm --no-deps migrate
+```
+
+迁移成功后启动网站和代理，更新数据库服务的健康检查配置：
+
+```bash
+docker compose up -d db app caddy
+```
+
+**6. 验收并恢复自动备份。**
+
+检查登录、社员名单、预约表、共同练习人数、个人额度、固定鼓课和管理操作记录。确认使用的是恢复后的数据，处理备份时间点之后需要重新登记的变更，再启动备份：
+
+```bash
+docker compose up -d backup
+docker compose logs --tail=100 backup
+```
+
+确认日志出现 `backup and restore verification succeeded`，并且新备份文件生成。备份服务此后使用新的 `POSTGRES_DB`。原数据库先保留，待人工确认恢复稳定后再按运维保留策略处理。
+
+### 情况二：PostgreSQL 无法启动，或服务器／数据卷损坏
+
+不要反复删除或初始化原数据卷。先保留故障卷或磁盘快照，使用独立的新服务器部署；若需要在同机使用新卷，应先由运维确认 Compose 项目名、卷和端口完全隔离。
+
+在新服务器上：
+
+1. 准备本仓库代码、Docker Compose 和部署 `.env`，配置新的数据库凭据和正确的域名。此时不要启动完整服务栈。
+2. 从异地副本取回选定备份及对应 `.sha256` 文件，已有 `.verified` 文件也一并复制到 `BACKUP_DIRECTORY`，保留原文件名并限制目录权限。容器内路径仍为 `/backups`，校验文件中的路径无需手动修改。
+3. 仅运行 `docker compose up -d db backup-verify`，等待健康状态正常，先不运行迁移或应用。
+4. 按“情况一”的第 2–6 步完成重新验证、恢复到新库、撤销会话、迁移及验收。
+5. 验收通过后再将域名流量切换到新服务器，确认 HTTPS 和自动备份正常。
+
+如果原服务器磁盘和同机备份一并丢失，且没有异地副本，就无法依靠本功能找回数据。代码仓库不包含数据库备份或部署密钥，正式上线前应单独保管这两类资料。

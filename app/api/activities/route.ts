@@ -1,3 +1,4 @@
+import { recordAdminAction } from '@/lib/admin-audit';
 import { canManageActivities, getAuthUser, type AuthUser } from '@/lib/auth';
 import { getPool } from '@/db';
 import { json, mutationOriginError } from '@/lib/http';
@@ -111,14 +112,28 @@ export async function POST(request: Request) {
       title,
       user.id,
     ]);
-    const result = await getPool().query(
-      `INSERT INTO bookings
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `INSERT INTO bookings
          (id, booking_date, slot_index, member_name, user_id, entry_type)
        VALUES ${placeholders}
        RETURNING id`,
-      values,
-    );
-    return json({ count: result.rowCount ?? slots.length }, 201);
+        values,
+      );
+      await recordAdminAction(client, user.id, 'activity.create', title, {
+        slots,
+      });
+      await client.query('COMMIT');
+      return json({ count: result.rowCount ?? slots.length }, 201);
+    } finally {
+      try {
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    }
   } catch (error) {
     const code =
       error && typeof error === 'object' && 'code' in error

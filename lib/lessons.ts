@@ -1,3 +1,4 @@
+import { recordAdminAction } from '@/lib/admin-audit';
 import type { PoolClient } from 'pg';
 
 import { getPool } from '@/db';
@@ -529,6 +530,7 @@ export async function createLesson(
       requestedSlots(dates, input.firstSlotIndex),
       confirmation,
     );
+    await recordAdminAction(client, user.id, 'lesson.create', id, input);
     await client.query('COMMIT');
     return id;
   } catch (error) {
@@ -619,6 +621,7 @@ export async function updateLesson(
       requestedSlots(dates, input.firstSlotIndex),
       confirmation,
     );
+    await recordAdminAction(client, user.id, 'lesson.update', id, input);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -629,7 +632,7 @@ export async function updateLesson(
   }
 }
 
-export async function deleteLesson(id: string) {
+export async function deleteLesson(id: string, userId: string) {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
@@ -648,6 +651,9 @@ export async function deleteLesson(id: string) {
     }
     await client.query('DELETE FROM bookings WHERE lesson_id = $1::uuid', [id]);
     await client.query('DELETE FROM drum_lessons WHERE id = $1::uuid', [id]);
+    await recordAdminAction(client, userId, 'lesson.delete', id, {
+      className: lesson.class_name,
+    });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -668,7 +674,11 @@ function assertOccurrence(lesson: LessonRow, date: string) {
   }
 }
 
-export async function endLesson(id: string, lastOccurrenceDate: string) {
+export async function endLesson(
+  id: string,
+  lastOccurrenceDate: string,
+  userId: string,
+) {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
@@ -717,6 +727,9 @@ export async function endLesson(id: string, lastOccurrenceDate: string) {
        WHERE id = $1::uuid`,
       [id, lastOccurrenceDate],
     );
+    await recordAdminAction(client, userId, 'lesson.end', id, {
+      lastOccurrenceDate,
+    });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -751,6 +764,7 @@ export async function pauseLesson(id: string, date: string, userId: string) {
          AND entry_type = 'lesson'`,
       [id, date],
     );
+    await recordAdminAction(client, userId, 'lesson.pause', id, { date });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -799,6 +813,7 @@ export async function resumeLesson(
       requestedSlots([date], lesson.first_slot_index),
       confirmation,
     );
+    await recordAdminAction(client, user.id, 'lesson.resume', id, { date });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -898,6 +913,10 @@ export async function saveBookingPolicyWithLessons(
                  updated_at::text AS updated_at`,
       [semesterStart, semesterEnd, userId],
     );
+    await recordAdminAction(client, userId, 'settings.semester', 'semester', {
+      semesterStart,
+      semesterEnd,
+    });
     await client.query('COMMIT');
     return {
       semesterStart: result.rows[0].semester_start,

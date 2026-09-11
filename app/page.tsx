@@ -48,6 +48,7 @@ import {
   AccountManagement,
   type AccountView,
 } from '@/components/account-management';
+import { AdminAudit } from '@/components/admin-audit';
 import { MyBookings } from '@/components/my-bookings';
 import {
   maxVisibleWeekOffsetForRole,
@@ -464,7 +465,9 @@ export default function Home() {
   const [cancelEntry, setCancelEntry] = useState<Booking | null>(null);
   const [contactEntry, setContactEntry] = useState<Booking | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
-  const [accountView, setAccountView] = useState<AccountView>('overview');
+  const [accountView, setAccountView] = useState<AccountView | 'audit'>(
+    'overview',
+  );
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminNotice, setAdminNotice] = useState('');
@@ -1905,22 +1908,31 @@ export default function Home() {
               />
             </>
           )}
-          <AccountManagement
-            users={managedUsers}
-            systemAdmin={user.role === 'system_admin'}
-            busy={adminLoading}
-            view={accountView}
-            onView={(view) => {
-              setAccountView(view);
-              setAdminNotice('');
-            }}
-            onUpdate={updateManagedUser}
-            onReset={(id) =>
-              setResetTarget(
-                managedUsers.find((item) => item.id === id) ?? null,
-              )
-            }
-          />
+          {accountView === 'audit' && user.role === 'system_admin' ? (
+            <AdminAudit onBack={() => setAccountView('overview')} />
+          ) : (
+            <AccountManagement
+              users={managedUsers}
+              systemAdmin={user.role === 'system_admin'}
+              busy={adminLoading}
+              view={accountView === 'audit' ? 'overview' : accountView}
+              onView={(view) => {
+                setAccountView(view);
+                setAdminNotice('');
+              }}
+              onUpdate={updateManagedUser}
+              onReset={(id) =>
+                setResetTarget(
+                  managedUsers.find((item) => item.id === id) ?? null,
+                )
+              }
+            />
+          )}
+          {accountView === 'overview' && user.role === 'system_admin' && (
+            <Button variant="outline" onClick={() => setAccountView('audit')}>
+              管理操作记录
+            </Button>
+          )}
 
           <p
             aria-live="polite"

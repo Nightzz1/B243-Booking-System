@@ -4,6 +4,8 @@ import {
   date,
   index,
   integer,
+  jsonb,
+  text,
   pgEnum,
   pgTable,
   timestamp,
@@ -345,6 +347,28 @@ export const lessonCancellationAudits = pgTable(
     check(
       'lesson_cancellation_audits_slot_index_range',
       sql`${table.slotIndex} BETWEEN 0 AND 12`,
+    ),
+  ],
+);
+
+export const adminAuditLogs = pgTable(
+  'admin_audit_logs',
+  {
+    id: uuid('id').primaryKey(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    actorId: uuid('actor_id').notNull(),
+    actorAccount: text('actor_account').notNull(),
+    actorName: text('actor_name').notNull(),
+    action: text('action').notNull(),
+    target: text('target').notNull(),
+    details: jsonb('details').notNull().default({}),
+  },
+  (table) => [
+    index('admin_audit_logs_created_idx').on(
+      table.createdAt.desc(),
+      table.id.desc(),
     ),
   ],
 );

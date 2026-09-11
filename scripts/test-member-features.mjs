@@ -377,6 +377,41 @@ try {
     ).rows[0];
     assert.deepEqual(saved, { role: 'member', status: 'approved' });
   }
+  const auditApi = await import('../app/api/admin/audit-logs/route.ts');
+  assert.equal((await auditApi.GET(request(users[1].token))).status, 403);
+  assert.equal((await auditApi.GET(request(''))).status, 403);
+  const auditResponse = await auditApi.GET(request(users[2].token));
+  assert.equal(auditResponse.status, 200);
+  const auditBody = await auditResponse.json();
+  assert.ok(
+    auditBody.logs.some((entry) => entry.action === 'account.reset_password'),
+  );
+  assert.equal(
+    auditBody.logs.filter((entry) => entry.action === 'account.set_role')
+      .length,
+    4,
+  );
+  assert.equal(JSON.stringify(auditBody).includes(resetPassword), false);
+  const { recordAdminAction } = await import('../lib/admin-audit.ts');
+  const auditClient = await pool.connect();
+  try {
+    await auditClient.query('BEGIN');
+    await recordAdminAction(auditClient, users[2].id, 'test.rollback', 'test');
+    await auditClient.query('ROLLBACK');
+  } finally {
+    auditClient.release();
+  }
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS count FROM admin_audit_logs WHERE action='test.rollback'",
+      )
+    ).rows[0].count,
+    0,
+  );
+  console.log(
+    'PASS administrator audit authorization, successful-only role records, secret exclusion and transaction rollback',
+  );
   console.log(
     'PASS approved-only administrator assignment and system-admin-only role changes',
   );

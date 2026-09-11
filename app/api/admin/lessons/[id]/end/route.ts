@@ -31,7 +31,7 @@ export async function POST(
       typeof body.lastOccurrenceDate === 'string'
         ? body.lastOccurrenceDate
         : '';
-    await endLesson(id, lastOccurrenceDate);
+    await endLesson(id, lastOccurrenceDate, user.id);
     const policy = await getBookingPolicy();
     return json({ lessons: await getLessons(policy) });
   } catch (error) {
